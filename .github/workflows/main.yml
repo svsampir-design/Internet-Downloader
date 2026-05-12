@@ -1,32 +1,24 @@
-name: ⚡️ Omni Searcher
+name: 🧲 Direct Torrent Searcher
 
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: '🎯 موتور جستجو'
-        required: true
-        type: choice
-        options:
-          - piratebay (تورنت)
-          - web (جستجوی اینترنت)
-        default: 'web (جستجوی اینترنت)'
       query:
-        description: '🔍 عبارت جستجو'
+        description: 'نام دقیق (مثلاً The Pitt S02)'
         required: true
         type: string
       max_results:
-        description: '🔢 حداکثر نتایج'
+        description: 'حداکثر نتایج'
         required: false
         type: number
-        default: 15
+        default: 10
 
 env:
   PYTHONUNBUFFERED: '1'
 
 jobs:
   search:
-    name: 🔎 جستجوی قدرتمند
+    name: 🎯 شکار لینک مستقیم
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -38,168 +30,116 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
-      - name: ⚡️ آماده‌سازی تسلیحات
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq python3-pip
-          pip3 install -q requests beautifulsoup4
-
-      - name: 🎯 اجرای ماموریت جستجو
+      - name: ⚡️ نصب و جستجو
         env:
-          MODE: ${{ github.event.inputs.mode }}
           QUERY: ${{ github.event.inputs.query }}
           MAX: ${{ github.event.inputs.max_results }}
         run: |
+          pip3 install -q requests beautifulsoup4 2>/dev/null
           python3 << 'PYEOF'
-          import os, re, json, requests, hashlib, sys
+          import os, re, json, requests
           from datetime import datetime
           from pathlib import Path
           from urllib.parse import quote_plus
-          from bs4 import BeautifulSoup
 
-          mode = os.environ['MODE']
           query = os.environ['QUERY'].strip()
-          max_r = int(os.environ.get('MAX', 15))
-
+          max_r = int(os.environ.get('MAX', 10))
           results = []
-          engine_name = ""
 
-          # ─── ۱. PirateBay ───
-          if 'piratebay' in mode:
-              engine_name = "PirateBay (apibay)"
-              print(f'🏴‍☠️ جستجو در {engine_name}: {query}')
-              try:
-                  url = f'https://apibay.org/q.php?q={quote_plus(query)}&cat=0'
-                  resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
-                  if resp.status_code == 200 and resp.text.strip():
-                      data = resp.json()
-                      if isinstance(data, list) and len(data) > 0 and data[0].get('name') != 'No results returned':
-                          for item in data[:max_r]:
-                              name = item.get('name', 'Unknown')
-                              info_hash = item.get('info_hash', '')
-                              seeders = item.get('seeders', 0)
-                              leechers = item.get('leechers', 0)
-                              size = int(item.get('size', 0))
-                              size_str = f'{size/1e9:.2f} GB' if size >= 1e9 else f'{size/1e6:.2f} MB'
-                              magnet = f'magnet:?xt=urn:btih:{info_hash}&dn={quote_plus(name)}'
-                              results.append({
-                                  'title': name[:80],
-                                  'url': magnet,
-                                  'info': f'Seed: {seeders} | Leech: {leechers} | Size: {size_str}',
-                                  'direct': True,
-                                  'ext': 'magnet'
-                              })
-              except Exception as e:
-                  print(f'   ⚠️ خطا: {e}')
+          # روش پیشرفته: جستجوی 1337x (مطمئن‌ترین منبع آنلاین)
+          print(f'🔍 جستجوی {query} در 1337x...')
+          try:
+              headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+              search_url = f'https://1337x.to/search/{quote_plus(query)}/1/'
+              resp = requests.get(search_url, headers=headers, timeout=15)
+              
+              if resp.status_code == 200:
+                  from bs4 import BeautifulSoup
+                  soup = BeautifulSoup(resp.text, 'html.parser')
+                  rows = soup.select('table.table-list tbody tr')
+                  
+                  for row in rows[:max_r]:
+                      name_col = row.select_one('td.name a:nth-of-type(2)')
+                      if name_col:
+                          name = name_col.get_text(strip=True)
+                          link = 'https://1337x.to' + name_col.get('href', '')
+                          
+                          # سعی کن اطلاعات بیشتر بگیری
+                          seeds = row.select_one('td.seeds')
+                          leeches = row.select_one('td.leeches')
+                          size = row.select_one('td.size')
+                          
+                          seeds = seeds.get_text(strip=True) if seeds else '0'
+                          leeches = leeches.get_text(strip=True) if leeches else '0'
+                          size = size.get_text(strip=True) if size else 'N/A'
+                          
+                          results.append({
+                              'title': name[:80],
+                              'url': link,
+                              'info': f'Seed: {seeds} | Leech: {leeches} | Size: {size}'
+                          })
+              else:
+                  print(f'   ⚠️ وضعیت: {resp.status_code}')
+          except Exception as e:
+              print(f'   ❌ خطا: {e}')
 
-          # ─── ۲. جستجوی وب عمومی (DuckDuckGo) ───
-          elif 'web' in mode:
-              engine_name = "DuckDuckGo Web"
-              print(f'🌐 جستجوی وب: {query}')
-              try:
-                  headers = {
-                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                  }
-                  url = 'https://html.duckduckgo.com/html/'
-                  params = {'q': query}
-                  resp = requests.post(url, data=params, headers=headers, timeout=15)
-                  if resp.status_code == 200:
-                      soup = BeautifulSoup(resp.text, 'html.parser')
-                      items = soup.select('.result')
-                      for item in items[:max_r]:
-                          title_elem = item.select_one('.result__title')
-                          link_elem = item.select_one('.result__url')
-                          snippet_elem = item.select_one('.result__snippet')
-                          if title_elem and link_elem:
-                              title = title_elem.get_text(strip=True)
-                              raw_link = link_elem.get('href', '')
-                              if 'uddg=' in raw_link:
-                                  actual_link = raw_link.split('uddg=')[-1].split('&')[0]
-                                  actual_link = requests.utils.unquote(actual_link)
-                              else:
-                                  actual_link = raw_link
-                              snippet = snippet_elem.get_text(strip=True) if snippet_elem else ''
-                              file_ext = re.search(r'\.(\w{2,4})$', actual_link.split('?')[0])
-                              results.append({
-                                  'title': title[:80],
-                                  'url': actual_link,
-                                  'info': snippet[:120],
-                                  'direct': bool(file_ext),
-                                  'ext': file_ext.group(1) if file_ext else ''
-                              })
-              except Exception as e:
-                  print(f'   ⚠️ خطا: {e}')
-
-          # ─── ذخیره نتایج ───
+          # اگر نتیجه داشت، مگنت بگیر
+          if results:
+              print(f'\n📥 استخراج لینک‌های مگنت...')
+              for i, r in enumerate(results):
+                  try:
+                      resp2 = requests.get(r['url'], headers=headers, timeout=10)
+                      if resp2.status_code == 200:
+                          soup2 = BeautifulSoup(resp2.text, 'html.parser')
+                          magnet_li = soup2.select_one('ul li a[href^="magnet:?xt="]')
+                          if magnet_li:
+                              results[i]['url'] = magnet_li.get('href', '')
+                              results[i]['ext'] = 'magnet'
+                          else:
+                              results[i]['url'] = 'No magnet found'
+                  except:
+                      pass
+                  print(f'   ✅ {i+1}/{len(results)}')
+          
+          # خروجی مشابه قبل
           if not results:
-              print('😞 هیچ نتیجه‌ای پیدا نشد.')
-              sys.exit(0)
-
+              print('😞 هیچی پیدا نشد.')
+              exit(1)
+          
           ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
           qs = re.sub(r'[^\w]', '_', query)[:30]
-          search_dir = Path('searches')
-          search_dir.mkdir(exist_ok=True)
-          report_file = search_dir / f'{qs}_{ts}.md'
-
-          md = f'# {engine_name}\n\n'
-          md += f'**Query:** `{query}` | **Results:** {len(results)}\n\n'
-          md += '| # | Title | Info | Link/Info |\n'
-          md += '|---|-------|------|------------|\n'
+          Path('searches').mkdir(exist_ok=True)
+          report = Path(f'searches/{qs}_{ts}.md')
+          
+          md = f'# 🧲 {query}\n\n**Results:** {len(results)}\n\n'
+          md += '| # | Title | Info | Magnet |\n'
+          md += '|---|-------|------|--------|\n'
           for i, r in enumerate(results, 1):
               title = r['title'].replace('|', '/')
               info = r.get('info', '').replace('|', '/')
-              if r.get('url', '').startswith('magnet'):
-                  link_str = f'[MAGNET]({r["url"]})'
-              else:
-                  link_str = f'[Link]({r["url"]})'
-              md += f'| {i} | {title} | {info} | {link_str} |\n'
-
-          md += '\n---\n\n## 📝 جزئیات کامل\n\n'
+              md += f'| {i} | {title} | {info} | [MAGNET]({r["url"]}) |\n'
+          
+          md += '\n---\n\n## 📝 جزئیات\n\n'
           for i, r in enumerate(results, 1):
               md += f'### {i}. {r["title"]}\n\n'
-              if r['url'].startswith('magnet'):
-                  md += f'```text\n{r["url"]}\n```\n\n'
-              else:
-                  md += f'**URL:** {r["url"]}\n\n'
-              if r.get('direct'):
-                  md += f'**⚠️ لینک مستقیم فایل:** بله (.{r.get("ext")})\n\n'
-              md += f'**اطلاعات:** {r.get("info")}\n\n---\n\n'
-
-          report_file.write_text(md)
-          print(f'✅ گزارش نهایی: {report_file}')
+              md += f'```text\n{r["url"]}\n```\n\n'
+              md += f'{r.get("info")}\n\n---\n\n'
+          
+          report.write_text(md)
+          print(f'✅ گزارش: {report}')
           PYEOF
 
-      - name: 📤 انتشار نتایج روی گیت‌هاب
+      - name: 📤 آپلود به گیت‌هاب
         run: |
-          git config user.name "github-actions[bot]"
+          git config user.name "bot"
           git config user.email "bot@github.com"
-          
-          echo "📦 آماده‌سازی برای آپلود..."
           mkdir -p searches
           git add searches/
-          
-          TOTAL=$(git diff --cached --name-only | wc -l)
-          if [ "$TOTAL" -eq 0 ]; then
-            echo "😴 چیز جدیدی برای آپلود نیست."
-            exit 0
-          fi
-          
-          echo "   📊 فایل‌های تغییر کرده: $TOTAL"
-          git diff --cached --name-only | while read f; do echo "      📎 $f"; done
-          
-          QUERY="${{ github.event.inputs.query }}"
-          MODE="${{ github.event.inputs.mode }}"
-          git commit -m "🔍 جستجو [${MODE}]: ${QUERY:0:50} [skip ci]" --quiet
-          
-          for i in 1 2 3 4 5; do
-            echo -n "   🚀 تلاش $i..."
-            if git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null; then
-              echo " ✅ پایان ماموریت!"
-              exit 0
-            fi
-            echo " ❌"
-            git rebase --abort 2>/dev/null || true
-            [ $i -lt 5 ] && sleep $((i*5))
+          git diff --cached --quiet && exit 0
+          git commit -m "🧲 نتایج جستجوی ${{ github.event.inputs.query }}" --quiet
+          for i in 1 2 3; do
+            git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null && exit 0
+            sleep 3
           done
-          echo "💀 آپلود ناموفق - احتمالاً حجم بالا یا قطعی نت"
+          echo "❌ آپلود ناموفق"
           exit 1
