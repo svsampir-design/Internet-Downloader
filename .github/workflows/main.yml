@@ -1,4 +1,4 @@
-name: 🌐 Omni-Sniffer v5
+name: 🌐 Omni-Sniffer Final
 
 on:
   workflow_dispatch:
@@ -9,15 +9,15 @@ on:
         type: choice
         options:
           - torrent-search (جستجوی تورنت)
-          - torrent-download (دانلود از لینک صفحه/مگنت)
-          - media-hunter (شکار ویدیو از وب‌سایت)
-        default: 'torrent-download (دانلود از لینک صفحه/مگنت)'
+          - torrent-download (دانلود از لینک/مگنت)
+          - media-hunter (شکار ویدیو از سایت)
+        default: 'torrent-download (دانلود از لینک/مگنت)'
       query:
-        description: '🔍 عبارت | 🧲 مگنت | 🌐 لینک صفحه'
+        description: '🔍 عبارت | 🧲 مگنت | 🌐 لینک'
         required: true
         type: string
       video_quality:
-        description: '🎬 کیفیت (برای مود media و torrent)'
+        description: '🎬 کیفیت'
         required: false
         type: choice
         options: [best, 1080, 720, 480, 360]
@@ -28,17 +28,18 @@ on:
         type: number
         default: 3
       split_mb:
-        description: '📦 تکه کردن > MB (0=نه)'
+        description: '📦 تکه کردن > MB'
         required: false
         type: number
         default: 70
 
 env:
   PYTHONUNBUFFERED: '1'
+  WORKER_URL: 'https://torrent-bridge.اسم-اختصاصی-خودت.workers.dev'
 
 jobs:
   omni-job:
-    name: ⚡️ عملیات ساده
+    name: ⚡️ عملیات نهایی
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -75,6 +76,7 @@ jobs:
           max_items = int(os.environ.get('MAX', 3))
           split_mb = int(os.environ.get('SPLIT_MB', 70))
           video_quality = os.environ.get('VIDEO_QUALITY', '480')
+          WORKER_URL = os.environ.get('WORKER_URL', '')
 
           H = {'User-Agent': 'Mozilla/5.0'}
 
@@ -112,7 +114,7 @@ jobs:
                   print(f'⚠️ {resp.status_code}')
 
           # =================================================================
-          #  ۲. دانلود تورنت (از لینک صفحه یا مگنت)
+          #  ۲. دانلود تورنت (با Worker)
           # =================================================================
           elif 'download' in mode:
               magnet = query if query.startswith('magnet:') else None
@@ -124,13 +126,11 @@ jobs:
                       resp = requests.get(query, headers=H, timeout=15, allow_redirects=True)
                       if resp.status_code == 200:
                           soup = BeautifulSoup(resp.text, 'html.parser')
-                          # دنبال لینک مگنت بگرد (هر تگی که href با magnet: شروع بشه)
                           magnet_tag = soup.select_one('a[href^="magnet:"]')
                           if magnet_tag:
                               magnet = magnet_tag.get('href')
                               print(f'✅ مگنت پیدا شد!')
                           else:
-                              # شاید تو خود متن صفحه باشه
                               found = re.findall(r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^\s"\'<>]*', resp.text)
                               if found:
                                   magnet = found[0]
@@ -146,81 +146,54 @@ jobs:
                   print('❌ هیچ مگنتی پیدا نشد!')
                   sys.exit(1)
 
-              # حالا مگنت رو بده به webtor.io (مستقیم!)
-              print(f'🚀 ارسال به webtor.io...')
+              # استفاده از Worker
+              print(f'🚀 ارسال به Worker...')
               try:
-                  # استخراج info_hash از مگنت
-                  hash_match = re.search(r'btih:([a-fA-F0-9]{40})', magnet)
-                  if not hash_match:
-                      print('❌ مگنت نامعتبر')
-                      sys.exit(1)
-                  info_hash = hash_match.group(1).lower()
+                  worker_req = f'{WORKER_URL}/?magnet={quote_plus(magnet)}'
+                  resp = requests.get(worker_req, headers=H, timeout=60)
                   
-                  # آپلود به webtor
-                  # اول فایل تورنت رو از itorrents بگیر
-                  torrent_url = f'https://itorrents.org/torrent/{info_hash}.torrent'
-                  torrent_resp = requests.get(torrent_url, headers=H, timeout=15)
-                  
-                  if torrent_resp.status_code == 200:
-                      # آپلود به webtor
-                      upload_resp = requests.post(
-                          'https://webtor.io/api/torrents',
-                          files={'torrent': ('file.torrent', torrent_resp.content)},
-                          timeout=30
-                      )
-                      if upload_resp.status_code == 200:
-                          data = upload_resp.json()
-                          new_hash = data.get('infoHash', '')
+                  if resp.status_code == 200:
+                      files = resp.json()
+                      if isinstance(files, dict) and 'error' in files:
+                          print(f'❌ {files["error"]}')
+                          sys.exit(1)
+                      
+                      if not files:
+                          print('😞 فایلی پیدا نشد')
+                          sys.exit(1)
+                      
+                      print(f'🎬 {len(files)} فایل برای دانلود')
+                      out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
+                      out_dir.mkdir(parents=True, exist_ok=True)
+                      
+                      for i, vf in enumerate(files[:max_items], 1):
+                          name = vf.get('name', f'file_{i}')
+                          size = vf.get('size', 0)
+                          dl_url = vf.get('url', '')
                           
-                          # گرفتن لیست فایل‌ها
-                          files_resp = requests.get(f'https://webtor.io/api/torrents/{new_hash}', timeout=15)
-                          if files_resp.status_code == 200:
-                              files_data = files_resp.json()
-                              all_files = files_data.get('files', [])
+                          print(f'\n📥 [{i}/{min(len(files), max_items)}] {name} ({size/1e6:.1f}MB)')
+                          
+                          filepath = out_dir / name
+                          ret = subprocess.run([
+                              'curl', '-L', '--retry', '3', '--max-time', '600',
+                              '-A', H['User-Agent'], '-o', str(filepath), dl_url
+                          ], check=False)
+                          
+                          if ret.returncode == 0 and filepath.exists() and filepath.stat().st_size > 0:
+                              actual_size = filepath.stat().st_size / 1e6
+                              print(f'   ✅ {actual_size:.1f}MB')
                               
-                              # فیلتر فایل‌های ویدیویی
-                              video_exts = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'm4v']
-                              videos = [f for f in all_files if any(f['name'].lower().endswith(ext) for ext in video_exts)]
-                              
-                              if not videos:
-                                  # اگه ویدیو نداشت، همه فایل‌ها رو بگیر
-                                  videos = all_files
-                              
-                              print(f'🎬 {len(videos)} فایل برای دانلود')
-                              
-                              out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
-                              out_dir.mkdir(parents=True, exist_ok=True)
-                              
-                              for i, vf in enumerate(videos[:max_items], 1):
-                                  name = vf['name']
-                                  size = vf.get('size', 0)
-                                  dl_url = f'https://webtor.io/api/torrents/{new_hash}/files/{quote_plus(name)}/download'
-                                  
-                                  print(f'\n📥 [{i}/{min(len(videos), max_items)}] {name} ({size/1e6:.1f}MB)')
-                                  
-                                  filepath = out_dir / name
-                                  ret = subprocess.run([
-                                      'curl', '-L', '--retry', '3', '--max-time', '600',
-                                      '-A', H['User-Agent'], '-o', str(filepath), dl_url
+                              if split_mb > 0 and actual_size > split_mb:
+                                  print(f'   ✂️ تکه‌تکه کردن...')
+                                  subprocess.run([
+                                      'zip', '-j', '-s', f'{split_mb}m',
+                                      str(filepath) + '.zip', str(filepath)
                                   ], check=False)
-                                  
-                                  if ret.returncode == 0 and filepath.exists() and filepath.stat().st_size > 0:
-                                      actual_size = filepath.stat().st_size / 1e6
-                                      print(f'   ✅ {actual_size:.1f}MB')
-                                      
-                                      if split_mb > 0 and actual_size > split_mb:
-                                          print(f'   ✂️ تکه‌تکه کردن...')
-                                          subprocess.run([
-                                              'zip', '-j', '-s', f'{split_mb}m',
-                                              str(filepath) + '.zip', str(filepath)
-                                          ], check=False)
-                                          filepath.unlink()
-                                  else:
-                                      print(f'   ❌ ناموفق')
-                      else:
-                          print(f'❌ خطای آپلود: {upload_resp.status_code}')
+                                  filepath.unlink()
+                          else:
+                              print(f'   ❌ ناموفق')
                   else:
-                      print(f'❌ تورنت پیدا نشد: {torrent_resp.status_code}')
+                      print(f'❌ خطای Worker: {resp.status_code}')
               except Exception as e:
                   print(f'❌ خطا: {e}')
 
