@@ -1,25 +1,12 @@
-name: 🌐 Real Scraper
+name: 🌐 Smart Bridge
 
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: '🎯 حالت'
-        required: true
-        type: choice
-        options:
-          - search (جستجوی وب)
-          - scrape (شکار ویدیو از صفحه)
-        default: 'scrape (شکار ویدیو از صفحه)'
-      query:
-        description: '🔍 عبارت جستجو | 🌐 لینک صفحه'
+      url:
+        description: '🌐 لینک صفحه'
         required: true
         type: string
-      max_items:
-        description: '🔢 حداکثر نتایج/ویدیو'
-        required: false
-        type: number
-        default: 5
       split_mb:
         description: '📦 تکه کردن > MB (0=نه)'
         required: false
@@ -28,258 +15,77 @@ on:
 
 env:
   PYTHONUNBUFFERED: '1'
+  WORKER_URL: 'https://نام-ورکر-خودت.workers.dev'
 
 jobs:
-  scraper-job:
-    name: 🕷️ شکارچی ویدیو
+  fetch:
+    name: ⚡️ دریافت از طریق Worker
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     permissions:
       contents: write
-    
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🛠️ نصب ابزارها
-        run: |
-          echo "📦 نصب..."
-          sudo apt-get update -qq 2>/dev/null || true
-          sudo apt-get install -y -qq curl zip 2>/dev/null || true
-          pip3 install -q requests beautifulsoup4 2>/dev/null
-          echo "✅ آماده!"
+      - name: 🛠️ نصب
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq curl zip python3-pip && pip3 install -q requests
 
       - name: 🎯 اجرا
         env:
-          MODE: ${{ github.event.inputs.mode }}
-          QUERY: ${{ github.event.inputs.query }}
-          MAX: ${{ github.event.inputs.max_items }}
+          PAGE_URL: ${{ github.event.inputs.url }}
           SPLIT_MB: ${{ github.event.inputs.split_mb }}
         run: |
           python3 << 'PYEOF'
-          import os, re, sys, subprocess, shutil
+          import os, subprocess, requests, sys, re
           from pathlib import Path
           from datetime import datetime
-          from urllib.parse import quote_plus, urljoin
-          import requests
-          from bs4 import BeautifulSoup
 
-          mode = os.environ['MODE']
-          query = os.environ['QUERY'].strip()
-          max_items = int(os.environ.get('MAX', 5))
+          page_url = os.environ['PAGE_URL']
           split_mb = int(os.environ.get('SPLIT_MB', 70))
+          WORKER_URL = os.environ['WORKER_URL']
 
-          H = {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.5',
-              'Referer': 'https://www.google.com/'
-          }
-
-          def sanitize(name, maxlen=40):
-              s = re.sub(r'[<>:"/\\|?*]', '_', name)
-              s = re.sub(r'_+', '_', s).strip('_')
-              if not s: s = "video"
-              return s[:maxlen]
-
-          # ======================
-          #  MODE: SEARCH (DuckDuckGo)
-          # ======================
-          if mode == 'search (جستجوی وب)':
-              print(f'🔍 جستجوی وب: {query}')
-              try:
-                  resp = requests.post('https://html.duckduckgo.com/html/', data={'q': query}, headers=H, timeout=15)
-                  if resp.status_code == 200:
-                      soup = BeautifulSoup(resp.text, 'html.parser')
-                      results = []
-                      for item in soup.select('.result')[:max_items]:
-                          a = item.select_one('.result__title a, .result__title .result__link')
-                          if not a: a = item.select_one('a')
-                          if not a: continue
-                          title = a.get_text(strip=True)
-                          raw = a.get('href', '')
-                          if 'uddg=' in raw:
-                              raw = raw.split('uddg=')[-1].split('&')[0]
-                              raw = requests.utils.unquote(raw)
-                          snippet = item.select_one('.result__snippet')
-                          desc = snippet.get_text(strip=True) if snippet else ''
-                          results.append({'title': title[:80], 'url': raw, 'desc': desc[:120]})
-                      
-                      if results:
-                          ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-                          qs = re.sub(r'[^\w]', '_', query)[:30]
-                          Path('searches').mkdir(exist_ok=True)
-                          f = Path(f'searches/{qs}_{ts}.md')
-                          md = f'# 🔍 {query}\n\n| # | Title | URL | Description |\n|---|---|---|---|\n'
-                          for i, r in enumerate(results, 1):
-                              md += f'| {i} | {r["title"]} | [Link]({r["url"]}) | {r["desc"]} |\n'
-                          f.write_text(md)
-                          print(f'✅ گزارش: {f}')
-                      else:
-                          print('😞 نتیجه‌ای یافت نشد')
-                  else:
-                      print(f'⚠️ خطای {resp.status_code}')
-              except Exception as e:
-                  print(f'❌ {e}')
-
-          # ======================
-          #  MODE: SCRAPE (شکار واقعی ویدیو)
-          # ======================
-          elif mode == 'scrape (شکار ویدیو از صفحه)':
-              url = query
-              if not url.startswith('http'):
-                  url = 'https://' + url
-
-              print(f'🕷️ بررسی صفحه: {url}')
-              
-              # دانلود صفحه
-              try:
-                  resp = requests.get(url, headers=H, timeout=15, allow_redirects=True)
-                  if resp.status_code != 200:
-                      print(f'❌ خطای {resp.status_code}')
-                      sys.exit(1)
-                  
-                  soup = BeautifulSoup(resp.text, 'html.parser')
-                  base = resp.url
-                  video_urls = set()
-                  
-                  # ۱. تگ <video>
-                  for v in soup.find_all('video'):
-                      src = v.get('src', '')
-                      if src and not src.startswith('data:'):
-                          video_urls.add(urljoin(base, src))
-                      # تگ source داخل video
-                      for s in v.find_all('source'):
-                          src2 = s.get('src', '')
-                          if src2 and not src2.startswith('data:'):
-                              video_urls.add(urljoin(base, src2))
-                  
-                  # ۲. تگ <source> بیرون از video
-                  for s in soup.find_all('source'):
-                      src = s.get('src', '')
-                      if src and not src.startswith('data:'):
-                          video_urls.add(urljoin(base, src))
-                  
-                  # ۳. iframe ها
-                  for iframe in soup.find_all('iframe'):
-                      iframe_src = iframe.get('src', '')
-                      if iframe_src:
-                          full = urljoin(base, iframe_src)
-                          print(f'📺 بررسی iframe: {full[:100]}...')
-                          try:
-                              ifr = requests.get(full, headers=H, timeout=10, allow_redirects=True)
-                              if ifr.status_code == 200:
-                                  ifs = BeautifulSoup(ifr.text, 'html.parser')
-                                  for tag in ifs.find_all(['video', 'source']):
-                                      s = tag.get('src', '')
-                                      if s and not s.startswith('data:'):
-                                          video_urls.add(urljoin(full, s))
-                                  # regex برای mp4/webm/mkv
-                                  found = re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|avi|mov|m4v|ts)[^\s"\'<>]*', ifr.text)
-                                  for f in found:
-                                      if len(f) < 500:
-                                          video_urls.add(f)
-                          except Exception as e:
-                              print(f'   ⚠️ خطای iframe: {e}')
-                  
-                  # ۴. لینک‌های مستقیم ویدیو در کل صفحه
-                  for a in soup.find_all('a', href=True):
-                      href = urljoin(base, a['href'])
-                      if any(href.lower().endswith(ext) for ext in ['.mp4', '.webm', '.mkv', '.avi', '.mov', '.m4v', '.ts']):
-                          video_urls.add(href)
-                  
-                  # ۵. regex رو کل صفحه
-                  found = re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|avi|mov|m4v|ts)[^\s"\'<>]*', resp.text)
-                  for f in found:
-                      if len(f) < 500:
-                          video_urls.add(f)
-                  
-                  # ۶. regex برای m3u8 (پخش زنده)
-                  m3u8 = re.findall(r'https?://[^\s"\'<>]+\.m3u8[^\s"\'<>]*', resp.text)
-                  for f in m3u8:
-                      if len(f) < 500:
-                          video_urls.add(f)
-                  
-                  video_urls = list(video_urls)[:max_items]
-                  
-                  if not video_urls:
-                      print('😞 هیچ ویدیویی پیدا نشد.')
-                      # دانلود فایل‌های غیر ویدیویی
-                      print('📁 جستجوی فایل‌های دیگه...')
-                      for a in soup.find_all('a', href=True):
-                          href = urljoin(base, a['href'])
-                          if any(href.lower().endswith(ext) for ext in ['.zip','.rar','.7z','.exe','.pdf','.iso','.apk','.torrent']):
-                              fname = href.split('/')[-1].split('?')[0]
-                              dest = Path('downloads') / sanitize(fname, 30)
-                              dest.mkdir(parents=True, exist_ok=True)
-                              print(f'📥 {fname}')
-                              subprocess.run(['curl', '-L', '-A', H['User-Agent'], '-o', str(dest / fname), href], check=False)
-                      sys.exit(0)
-                  
-                  print(f'🎬 {len(video_urls)} ویدیو پیدا شد!')
-                  
-                  # دانلود هر ویدیو
-                  for i, vurl in enumerate(video_urls, 1):
-                      # اسم ویدیو
-                      name = vurl.split('/')[-1].split('?')[0]
-                      if not name or '.' not in name:
-                          name = f'video_{i}.mp4'
-                      
-                      safe = sanitize(name.rsplit('.', 1)[0])
-                      out_dir = Path('downloads') / safe
-                      out_dir.mkdir(parents=True, exist_ok=True)
-                      filepath = out_dir / name
-                      
-                      print(f'\n📥 [{i}/{len(video_urls)}] {name}')
-                      
-                      # دانلود با curl (ساپورت redirect)
-                      ret = subprocess.run([
-                          'curl', '-L', '--retry', '3', '--max-time', '600',
-                          '-A', H['User-Agent'], '-o', str(filepath), vurl
-                      ], check=False)
-                      
-                      if ret.returncode == 0 and filepath.exists() and filepath.stat().st_size > 0:
-                          size_mb = filepath.stat().st_size / 1e6
-                          print(f'   ✅ {size_mb:.1f}MB')
-                          
-                          # تیکه تیکه کردن
-                          if split_mb > 0 and size_mb > split_mb:
-                              print(f'   ✂️ تیکه‌تکه ({split_mb}MB)...')
-                              subprocess.run([
-                                  'zip', '-j', '-s', f'{split_mb}m',
-                                  str(out_dir / f'{safe}.zip'), str(filepath)
-                              ], check=False)
-                              if list(out_dir.glob(f'{safe}.z*')):
-                                  filepath.unlink()
-                      else:
-                          print(f'   ❌ ناموفق (ممکنه redirect باشه یا دسترسی محدود)')
-                  
-                  # دانلود فایل‌های غیر ویدیویی هم
-                  for a in soup.find_all('a', href=True):
-                      href = urljoin(base, a['href'])
-                      if any(href.lower().endswith(ext) for ext in ['.zip','.rar','.7z','.exe','.pdf','.iso','.apk','.torrent']):
-                          fname = href.split('/')[-1].split('?')[0]
-                          dest = Path('downloads') / sanitize(fname, 30)
-                          dest.mkdir(parents=True, exist_ok=True)
-                          subprocess.run(['curl', '-L', '-A', H['User-Agent'], '-o', str(dest / fname), href], check=False)
-                  
-                  print('\n🎉 عملیات تموم شد!')
-                  
-              except Exception as e:
-                  print(f'❌ خطا: {e}')
+          print(f'🚀 درخواست به Worker برای: {page_url}')
+          try:
+              resp = requests.get(f'{WORKER_URL}/?url={page_url}', headers={'User-Agent': 'Mozilla/5.0'}, timeout=60)
+              if resp.status_code != 200:
+                  print(f'❌ Worker خطا داد: {resp.status_code}')
                   sys.exit(1)
+              
+              data = resp.json()
+              if not data.get('links'):
+                  print('😞 هیچ لینکی پیدا نشد. احتمالاً سایت قفل سختی داره.')
+                  sys.exit(1)
+              
+              print(f'🎬 {len(data["links"])} لینک دریافت شد. درحال دانلود...')
+              out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
+              out_dir.mkdir(parents=True, exist_ok=True)
+              
+              for i, link in enumerate(data['links'], 1):
+                  name = link.get('name', f'video_{i}')
+                  dl_url = link.get('url')
+                  print(f'📥 [{i}] {name}')
+                  fpath = out_dir / name
+                  ret = subprocess.run(['curl', '-L', '-A', 'Mozilla/5.0', '-o', str(fpath), dl_url], check=False)
+                  if fpath.exists() and fpath.stat().st_size > 0:
+                      size_mb = fpath.stat().st_size / 1e6
+                      print(f'   ✅ {size_mb:.1f}MB')
+                      if split_mb > 0 and size_mb > split_mb:
+                          subprocess.run(['zip', '-j', '-s', f'{split_mb}m', str(fpath) + '.zip', str(fpath)])
+                          fpath.unlink()
+                  else:
+                      print(f'   ❌ ناموفق')
+              print('🎉 تموم شد!')
+          except Exception as e:
+              print(f'❌ خطا: {e}')
           PYEOF
 
       - name: 📤 آپلود
         run: |
           git config user.name "bot"
           git config user.email "bot@github.com"
-          mkdir -p downloads searches
-          git add downloads/ searches/ 2>/dev/null
+          git add downloads/ 2>/dev/null
           git diff --cached --quiet && exit 0
-          git commit -m "📦 [${MODE}] ${QUERY:0:50}" --quiet
-          for i in 1 2 3; do
-            git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null && exit 0
-            sleep 3
-          done
+          git commit -m "📦 از ${PAGE_URL}" --quiet
+          for i in 1 2 3; do git pull --rebase --quiet && git push --quiet && exit 0; sleep 3; done
