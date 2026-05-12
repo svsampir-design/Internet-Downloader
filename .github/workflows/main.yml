@@ -15,7 +15,7 @@ on:
 
 env:
   PYTHONUNBUFFERED: '1'
-  WORKER_URL: 'https://نام-ورکر-خودت.workers.dev'
+  WORKER_URL: 'https://script.google.com/macros/s/AKfycbxuapQ3OQKFOGxZchcCEdjzgz6IWoBs889IUv2lX6AqnxPUCiNoVveJMhZc5uMPMG3BTw/exec'
 
 jobs:
   fetch:
