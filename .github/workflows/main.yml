@@ -1,4 +1,4 @@
-name: 🧲 Torrent Master
+name: 🧲 Torrent Direct
 
 on:
   workflow_dispatch:
@@ -8,35 +8,29 @@ on:
         required: true
         type: choice
         options:
-          - search (جستجوی تورنت)
-          - download (دانلود تورنت)
-        default: 'download (دانلود تورنت)'
+          - search (جستجو)
+          - download (دانلود)
+        default: 'download (دانلود)'
       query:
-        description: '🔍 عبارت | 🧲 مگنت | 🌐 لینک صفحه'
+        description: '🔍 عبارت | 🧲 مگنت | 🌐 لینک'
         required: true
         type: string
-      video_quality:
-        description: '🎬 کیفیت'
-        required: false
-        type: choice
-        options: [best, 1080, 720, 480, 360]
-        default: 'best'
       max_items:
         description: '🔢 حداکثر'
         required: false
         type: number
         default: 3
       split_mb:
-        description: '📦 تکه > MB (0=نه)'
+        description: '📦 تکه > MB'
         required: false
         type: number
         default: 70
 
 jobs:
   torrent:
-    name: ⚡️ دانلود تورنت
+    name: ⚡️ دانلود مستقیم
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     permissions:
       contents: write
     
@@ -47,8 +41,13 @@ jobs:
 
       - name: 🛠️ نصب
         run: |
-          pip3 install -q requests beautifulsoup4 seedrcc 2>/dev/null
-          sudo apt-get install -y -qq curl zip ffmpeg 2>/dev/null || true
+          sudo apt-get update -qq 2>/dev/null || true
+          sudo apt-get install -y -qq curl zip python3-pip 2>/dev/null || true
+          # دانلود aria2c از سورس (نسخه جدیدتر)
+          wget -q https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-linux-gnu-64bit.tar.xz
+          tar -xf aria2-1.37.0-linux-gnu-64bit.tar.xz
+          sudo cp aria2-1.37.0-linux-gnu-64bit/aria2c /usr/local/bin/
+          pip3 install -q requests beautifulsoup4 2>/dev/null
           echo "✅ آماده!"
 
       - name: 🎯 اجرا
@@ -57,30 +56,20 @@ jobs:
           QUERY: ${{ github.event.inputs.query }}
           MAX: ${{ github.event.inputs.max_items }}
           SPLIT_MB: ${{ github.event.inputs.split_mb }}
-          VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
-          SEEDR_TOKEN: ${{ secrets.SEEDR_TOKEN }}
         run: |
           python3 << 'PYEOF'
-          import os, re, sys, subprocess, shutil, time
+          import os, re, sys, subprocess, shutil
           from pathlib import Path
           from datetime import datetime
           from urllib.parse import quote_plus
           import requests
           from bs4 import BeautifulSoup
-          from seedrcc import Seedr
 
           mode = os.environ['MODE']
           query = os.environ['QUERY'].strip()
           max_items = int(os.environ.get('MAX', 3))
           split_mb = int(os.environ.get('SPLIT_MB', 70))
-          video_quality = os.environ.get('VIDEO_QUALITY', 'best')
-          token = os.environ.get('SEEDR_TOKEN', '')
 
-          if not token:
-              print('❌ توکن Seedr تنظیم نشده!')
-              sys.exit(1)
-
-          seedr = Seedr(token=token, autoRefresh=True)
           H = {'User-Agent': 'Mozilla/5.0'}
 
           # ===== SEARCH =====
@@ -116,14 +105,13 @@ jobs:
               magnet = query if query.startswith('magnet:') else None
               
               if not magnet:
-                  print(f'🕷️ استخراج مگنت از: {query}')
+                  print(f'🕷️ استخراج از: {query}')
                   try:
                       resp = requests.get(query, headers=H, timeout=15, allow_redirects=True)
                       if resp.status_code == 200:
                           soup = BeautifulSoup(resp.text, 'html.parser')
                           mt = soup.select_one('a[href^="magnet:"]')
-                          if mt:
-                              magnet = mt.get('href')
+                          if mt: magnet = mt.get('href')
                           else:
                               m = re.search(r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^\s"\'<>]*', resp.text)
                               if m: magnet = m.group(0)
@@ -138,76 +126,42 @@ jobs:
               
               print(f'🧲 {magnet[:60]}...')
               
-              # آپلود به Seedr
-              print('📤 آپلود به Seedr...')
-              seedr.addTorrent(magnet)
-              
-              # منتظر دانلود
-              print('⏳ منتظر دانلود در Seedr...')
-              file_info = None
-              for _ in range(120):  # حداکثر 10 دقیقه
-                  time.sleep(5)
-                  folders = seedr.listContents().get('folders', [])
-                  for folder in folders:
-                      for f in folder.get('files', []):
-                          if f.get('progress') == 100:
-                              file_info = f
-                              break
-                      if file_info: break
-                  if file_info: break
-                  print('.', end='', flush=True)
-              
-              if not file_info:
-                  print('\n❌ دانلود در Seedr تموم نشد')
-                  sys.exit(1)
-              
-              print(f'\n✅ {file_info["name"]} ({file_info["size"]/1e6:.1f}MB)')
-              
-              # گرفتن لینک مستقیم
-              print('🔗 گرفتن لینک مستقیم...')
-              dl_url = seedr.getFile(file_info['id'])
-              
-              # دانلود با curl
               out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
               out_dir.mkdir(parents=True, exist_ok=True)
-              fpath = out_dir / file_info['name']
               
-              print(f'📥 دانلود: {file_info["name"]}')
-              subprocess.run(['curl', '-L', '--retry', '3', '-A', 'Mozilla/5.0', '-o', str(fpath), dl_url], check=False)
+              # دانلود با aria2c فقط با DHT
+              print('📥 شروع دانلود (فقط DHT)...')
+              subprocess.run([
+                  'aria2c',
+                  '--bt-enable-lpd=true',          # Local Peer Discovery
+                  '--bt-tracker-connect-timeout=5',
+                  '--bt-tracker-timeout=5',
+                  '--dht-entry-point=dht.transmissionbt.com:6881',
+                  '--dht-file-path=/tmp/dht.dat',
+                  '--enable-dht=true',
+                  '--enable-dht6=false',
+                  '--enable-peer-exchange=true',
+                  '--follow-torrent=mem',
+                  '--max-connection-per-server=16',
+                  '--min-split-size=1M',
+                  '--seed-time=0',
+                  '--split=8',
+                  '--bt-tracker='',                 # بدون tracker
+                  '-d', str(out_dir),
+                  magnet
+              ], check=False)
               
-              if fpath.exists() and fpath.stat().st_size > 0:
-                  sz_mb = fpath.stat().st_size / 1e6
-                  print(f'   ✅ {sz_mb:.1f}MB')
-                  
-                  # فشرده‌سازی
-                  video_exts = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'm4v']
-                  if any(fpath.name.lower().endswith(ext) for ext in video_exts) and video_quality != 'best':
-                      tmp = fpath.with_name(f'comp_{fpath.name}')
-                      print(f'   🔄 فشرده‌سازی به {video_quality}p...')
-                      subprocess.run([
-                          'ffmpeg', '-i', str(fpath),
-                          '-vf', f'scale=-2:{video_quality}',
-                          '-c:v', 'libx264', '-crf', '23',
-                          '-c:a', 'aac', '-b:a', '128k',
-                          '-y', str(tmp)
-                      ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                      if tmp.exists():
-                          fpath.unlink()
-                          shutil.move(str(tmp), str(fpath))
-                          print(f'   📉 {fpath.stat().st_size/1e6:.1f}MB')
-                  
-                  # تیکه‌تکه
-                  if split_mb > 0 and sz_mb > split_mb:
-                      print(f'   ✂️ تیکه...')
-                      subprocess.run(['zip', '-j', '-s', f'{split_mb}m', str(fpath) + '.zip', str(fpath)])
-                      if list(fpath.parent.glob(f'{fpath.stem}.z*')):
-                          fpath.unlink()
-                  
-                  # حذف از Seedr
-                  print('🗑️ حذف از Seedr...')
-                  seedr.deleteFile(file_info['id'])
-                  print('✅ تموم شد!')
-
+              # پردازش فایل‌ها
+              for f in out_dir.iterdir():
+                  if f.is_file():
+                      sz = f.stat().st_size / 1e6
+                      print(f'✅ {f.name} ({sz:.1f}MB)')
+                      
+                      if split_mb > 0 and sz > split_mb:
+                          print(f'   ✂️ تیکه...')
+                          subprocess.run(['zip', '-j', '-s', f'{split_mb}m', str(f) + '.zip', str(f)])
+                          if list(f.parent.glob(f'{f.stem}.z*')):
+                              f.unlink()
           PYEOF
 
       - name: 📤 آپلود
@@ -218,23 +172,7 @@ jobs:
           git add downloads/ searches/ 2>/dev/null
           git diff --cached --quiet && exit 0
           git commit -m "📦 ${QUERY:0:50}" --quiet
-          for i in 1 2 3; do git pull --rebase --quiet && git push --quiet && exit 0; sleep 3; doner / name
-                      
-                      # خوندن فایل از تورنت
-                      with open(str(filepath), 'wb') as out_f:
-                          piece_size = torinfo.piece_length()
-                          total_size = f.size
-                          offset = 0
-                          while offset < total_size:
-                              chunk_size = min(1024*1024, total_size - offset)  # 1MB chunks
-                              data = handle.read_piece(offset // piece_size)
-                              if data:
-                                  piece_offset = offset % piece_size
-                                  if piece_offset + chunk_size <= len(data):
-                                      out_f.write(data[piece_offset:piece_offset+chunk_size])
-                              offset += chunk_size
-                      
-                      if filepath.exists() and filepath.stat().st_size > 0:
+          for i in 1 2 3; do git pull --rebase --quiet && git push --quiet && exit 0; sleep 3; done_size > 0:
                           size_mb = filepath.stat().st_size / 1e6
                           print(f'✅ {name} ({size_mb:.1f}MB)')
                           
