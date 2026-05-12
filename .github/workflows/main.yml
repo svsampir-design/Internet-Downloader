@@ -1,4 +1,4 @@
-name: 🌐 Ultimate Scraper
+name: 🌐 Ultimate Scraper Lite
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       video_quality:
-        description: '🎬 حداکثر کیفیت (در صورت نیاز تبدیل)'
+        description: '🎬 حداکثر کیفیت'
         required: false
         type: choice
         options: [best, 1080, 720, 480, 360]
@@ -37,7 +37,7 @@ env:
 
 jobs:
   omni-job:
-    name: ⚡️ اسکریپر و جستجو
+    name: ⚡️ اسکریپر سریع
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -48,11 +48,17 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🛠️ نصب پیش‌نیازها
+      - name: 🛠️ نصب پیش‌نیازها (سریع)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq curl zip python3-pip ffmpeg
+          echo "📦 نصب curl و zip..."
+          sudo apt-get update -qq 2>/dev/null || true
+          sudo apt-get install -y -qq curl zip 2>/dev/null || true
+          
+          echo "🐍 نصب پکیج‌های پایتون..."
+          pip3 install -q --no-cache-dir requests beautifulsoup4 yt-dlp 2>/dev/null || \
           pip3 install -q requests beautifulsoup4 yt-dlp
+          
+          echo "✅ همه چی آماده‌ست!"
 
       - name: 🎯 اجرا
         env:
@@ -63,7 +69,7 @@ jobs:
           VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
         run: |
           python3 << 'PYEOF'
-          import os, re, sys, subprocess, json, shutil
+          import os, re, sys, subprocess, shutil
           from pathlib import Path
           from datetime import datetime
           from urllib.parse import quote_plus, urljoin
@@ -91,8 +97,7 @@ jobs:
           if mode == 'search (جستجوی وب)':
               print(f'🔍 جستجوی وب: {query}')
               try:
-                  url = 'https://html.duckduckgo.com/html/'
-                  resp = requests.post(url, data={'q': query}, headers=H, timeout=15)
+                  resp = requests.post('https://html.duckduckgo.com/html/', data={'q': query}, headers=H, timeout=15)
                   if resp.status_code == 200:
                       soup = BeautifulSoup(resp.text, 'html.parser')
                       results = []
@@ -129,7 +134,7 @@ jobs:
                   print(f'❌ {e}')
 
           # ======================
-          #  MODE: SCRAPE (and convert)
+          #  MODE: SCRAPE
           # ======================
           elif mode == 'scrape (دانلود و تبدیل ویدیو از صفحه)':
               url = query
@@ -138,11 +143,9 @@ jobs:
 
               print(f'🕷️ اسکریپ: {url}')
               
-              # یک پوشه موقت برای دانلود اولیه
               tmp_dir = Path('/tmp/dl_' + datetime.now().strftime('%Y%m%d%H%M%S'))
               tmp_dir.mkdir(exist_ok=True)
 
-              # ۱) دانلود با yt-dlp (با محدودیت کیفیت)
               print('🎥 جستجوی ویدیوها...')
               quality_map = {
                   'best': 'bestvideo+bestaudio/best',
@@ -154,88 +157,40 @@ jobs:
               fmt = quality_map.get(video_quality, 'bestvideo[height<=480]+bestaudio/best[height<=480]')
 
               cmd = [
-                  'yt-dlp',
-                  '-f', fmt,
-                  '-o', str(tmp_dir / '%(title)s.%(ext)s'),
-                  '--merge-output-format', 'mp4',
-                  '--user-agent', H['User-Agent'],
-                  '--max-downloads', str(max_items),
-                  '--no-warnings',
-                  url
+                  'yt-dlp', '-f', fmt, '-o', str(tmp_dir / '%(title)s.%(ext)s'),
+                  '--merge-output-format', 'mp4', '--user-agent', H['User-Agent'],
+                  '--max-downloads', str(max_items), '--no-warnings', url
               ]
               subprocess.run(cmd, check=False)
 
-              # ۲) پیدا کردن همه فایل‌های دانلود شده
               videos = list(tmp_dir.glob('*.mp4')) + list(tmp_dir.glob('*.mkv')) + list(tmp_dir.glob('*.webm'))
+              
               if not videos:
-                  # شاید هیچی نبود، تلاش با کیفیت پایین‌تر
-                  print('⚠️ ویدیویی با کیفیت درخواستی یافت نشد، تلاش با best...')
+                  print('⚠️ تلاش با کیفیت best...')
                   subprocess.run(['yt-dlp', '-f', 'best', '-o', str(tmp_dir / '%(title)s.%(ext)s'),
                                   '--merge-output-format', 'mp4', '--user-agent', H['User-Agent'],
                                   '--max-downloads', str(max_items), url], check=False)
                   videos = list(tmp_dir.glob('*.mp4')) + list(tmp_dir.glob('*.mkv')) + list(tmp_dir.glob('*.webm'))
 
               if not videos:
-                  print('😞 هیچ ویدیویی دانلود نشد. شاید صفحه امنیتی دارد یا ویدیو وجود ندارد.')
+                  print('😞 هیچ ویدیویی دانلود نشد.')
                   sys.exit(0)
 
-              # پردازش هر ویدیو
               for video_path in videos:
-                  title = video_path.stem
-                  safe_title = sanitize(title)
+                  safe_title = sanitize(video_path.stem)
                   out_dir = Path('downloads') / safe_title
                   out_dir.mkdir(parents=True, exist_ok=True)
-
-                  final_path = out_dir / (video_path.name)
-
-                  # اگر کیفیت درخواستی عددی است و فایل اصلی کیفیت بالاتری دارد، تبدیل کن
-                  if video_quality.isdigit() and video_path.suffix == '.mp4':
-                      try:
-                          # تشخیص رزولوشن فعلی
-                          probe = subprocess.check_output(
-                              ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
-                               '-show_entries', 'stream=height', '-of', 'csv=p=0',
-                               str(video_path)], text=True).strip()
-                          current_height = int(probe) if probe.isdigit() else None
-                          target_height = int(video_quality)
-                          if current_height and current_height > target_height:
-                              print(f'🔄 تبدیل {video_path.name} از {current_height}p به {target_height}p...')
-                              converted = out_dir / f'{safe_title}_{target_height}p.mp4'
-                              subprocess.run([
-                                  'ffmpeg', '-i', str(video_path),
-                                  '-vf', f'scale=-2:{target_height}', '-c:v', 'libx264', '-crf', '23',
-                                  '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart',
-                                  '-y', str(converted)
-                              ], check=False)
-                              if converted.exists():
-                                  video_path.unlink()  # پاک کردن فایل اصلی
-                                  final_path = converted
-                      except Exception as e:
-                          print(f'⚠️ خطا در تبدیل: {e}')
-
-                  # انتقال به پوشه نهایی اگر هنوز انتقال نیافته
-                  if final_path != video_path:
-                      shutil.move(str(video_path), str(final_path))
-                  else:
-                      # اگر هنوز در tmp_dir است، انتقال بده
-                      shutil.move(str(video_path), str(out_dir / video_path.name))
-
-                  size_mb = final_path.stat().st_size / 1e6
-                  print(f'✅ ذخیره شد: {safe_title}/{final_path.name} ({size_mb:.1f}MB)')
-
-                  # تیکه‌تکه کردن اگر لازم بود
+                  dest = out_dir / video_path.name
+                  shutil.move(str(video_path), str(dest))
+                  size_mb = dest.stat().st_size / 1e6
+                  print(f'✅ {safe_title}/{dest.name} ({size_mb:.1f}MB)')
                   if split_mb > 0 and size_mb > split_mb:
                       print(f'✂️ تکه‌تکه‌سازی...')
-                      subprocess.run([
-                          'zip', '-j', '-s', f'{split_mb}m',
-                          str(out_dir / f'{safe_title}.zip'),
-                          str(final_path)
-                      ], check=False)
-                      # اگر zip با موفقیت ایجاد شد، فایل اصلی را پاک کن
+                      subprocess.run(['zip', '-j', '-s', f'{split_mb}m', str(out_dir / f'{safe_title}.zip'), str(dest)], check=False)
                       if list(out_dir.glob(f'{safe_title}.z*')):
-                          final_path.unlink()
+                          dest.unlink()
 
-              # ۳) فایل‌های غیر ویدیویی هم چک کن
+              # فایل‌های غیر ویدیویی
               try:
                   resp = requests.get(url, headers=H, timeout=15, allow_redirects=True)
                   if resp.status_code == 200:
@@ -244,12 +199,11 @@ jobs:
                           href = urljoin(resp.url, a['href'])
                           if any(href.lower().endswith(ext) for ext in ['.zip','.rar','.7z','.exe','.pdf','.iso','.apk']):
                               fname = href.split('/')[-1].split('?')[0]
-                              dest = Path('downloads') / sanitize(fname, 30)
-                              dest.mkdir(parents=True, exist_ok=True)
-                              subprocess.run(['curl', '-L', '-A', H['User-Agent'], '-o', str(dest / fname), href], check=False)
+                              dest_dir = Path('downloads') / sanitize(fname, 30)
+                              dest_dir.mkdir(parents=True, exist_ok=True)
+                              subprocess.run(['curl', '-L', '-A', H['User-Agent'], '-o', str(dest_dir / fname), href], check=False)
               except: pass
 
-              # پاکسازی پوشه موقت
               shutil.rmtree(tmp_dir, ignore_errors=True)
               print('🎉 عملیات اسکریپ به پایان رسید.')
           PYEOF
