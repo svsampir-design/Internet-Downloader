@@ -1,4 +1,4 @@
-name: 🧲 Torrent Master
+name: 🧲 Torrent Direct
 
 on:
   workflow_dispatch:
@@ -8,15 +8,15 @@ on:
         required: true
         type: choice
         options:
-          - torrent-search (جستجوی تورنت)
-          - torrent-download (دانلود از لینک/مگنت)
-        default: 'torrent-download (دانلود از لینک/مگنت)'
+          - search (جستجوی تورنت)
+          - download (دانلود تورنت)
+        default: 'download (دانلود تورنت)'
       query:
-        description: '🔍 عبارت جستجو | 🧲 مگنت | 🌐 لینک صفحه تورنت'
+        description: '🔍 عبارت | 🌐 لینک صفحه تورنت'
         required: true
         type: string
       max_items:
-        description: '🔢 حداکثر نتایج/فایل'
+        description: '🔢 حداکثر فایل'
         required: false
         type: number
         default: 3
@@ -26,15 +26,11 @@ on:
         type: number
         default: 70
 
-env:
-  PYTHONUNBUFFERED: '1'
-  SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbxX_XOgY9Omy_VPAThJC6IrlWmsC4yy4K2AhWfHGqlV9vO5wH7H_NQwc63iS6W9YZTzGA/exec'
-
 jobs:
   torrent-job:
-    name: ⚡️ عملیات تورنت
+    name: ⚡️ دانلود مستقیم تورنت
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     permissions:
       contents: write
     
@@ -43,10 +39,10 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🛠️ نصب ابزارها
+      - name: 🛠️ نصب
         run: |
           sudo apt-get update -qq 2>/dev/null || true
-          sudo apt-get install -y -qq curl zip python3-pip 2>/dev/null || true
+          sudo apt-get install -y -qq curl zip python3-pip aria2 2>/dev/null || true
           pip3 install -q requests beautifulsoup4 2>/dev/null
           echo "✅ آماده!"
 
@@ -58,139 +54,134 @@ jobs:
           SPLIT_MB: ${{ github.event.inputs.split_mb }}
         run: |
           python3 << 'PYEOF'
-          import os, re, sys, subprocess, requests
+          import os, re, sys, subprocess, shutil
           from pathlib import Path
           from datetime import datetime
-          from urllib.parse import quote_plus, urljoin
+          from urllib.parse import quote_plus
+          import requests
           from bs4 import BeautifulSoup
 
           mode = os.environ['MODE']
           query = os.environ['QUERY'].strip()
           max_items = int(os.environ.get('MAX', 3))
           split_mb = int(os.environ.get('SPLIT_MB', 70))
-          SCRIPT_URL = os.environ.get('SCRIPT_URL', '')
 
-          H = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+          H = {'User-Agent': 'Mozilla/5.0'}
 
           # =================================================================
-          #  ۱. جستجوی تورنت (Torrentz2)
+          #  جستجوی تورنت
           # =================================================================
-          if mode == 'torrent-search (جستجوی تورنت)':
+          if mode == 'search (جستجوی تورنت)':
               print(f'🧲 جستجو: {query}')
-              try:
-                  resp = requests.get(f'https://torrentz2.nz/search?q={quote_plus(query)}', headers=H, timeout=15)
+              resp = requests.get(f'https://torrentz2.nz/search?q={quote_plus(query)}', headers=H, timeout=15)
+              if resp.status_code == 200:
+                  soup = BeautifulSoup(resp.text, 'html.parser')
+                  results = []
+                  for item in soup.select('dl dt')[:max_items]:
+                      a = item.select_one('a')
+                      info = item.select_one('span')
+                      if a:
+                          results.append({
+                              'title': a.get_text(strip=True)[:80],
+                              'url': 'https://torrentz2.nz' + a.get('href', ''),
+                              'info': info.get_text(strip=True) if info else ''
+                          })
+                  if results:
+                      ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+                      qs = re.sub(r'[^\w]', '_', query)[:30]
+                      Path('searches').mkdir(exist_ok=True)
+                      f = Path(f'searches/{qs}_{ts}.md')
+                      md = f'# 🧲 {query}\n\n| # | Title | Info | Link |\n|---|-------|------|------|\n'
+                      for i, r in enumerate(results, 1):
+                          md += f'| {i} | {r["title"]} | {r["info"]} | [Page]({r["url"]}) |\n'
+                      f.write_text(md)
+                      print(f'✅ {f}')
+                  else:
+                      print('😞 هیچی پیدا نشد')
+
+          # =================================================================
+          #  دانلود تورنت (مستقیم با aria2c)
+          # =================================================================
+          elif mode == 'download (دانلود تورنت)':
+              print(f'🕷️ استخراج از: {query}')
+              
+              # استخراج info_hash از صفحه یا مگنت
+              info_hash = None
+              magnet = None
+              
+              if query.startswith('magnet:'):
+                  magnet = query
+                  m = re.search(r'btih:([a-fA-F0-9]{40})', query)
+                  if m:
+                      info_hash = m.group(1).lower()
+              else:
+                  resp = requests.get(query, headers=H, timeout=15, allow_redirects=True)
                   if resp.status_code == 200:
                       soup = BeautifulSoup(resp.text, 'html.parser')
-                      results = []
-                      for item in soup.select('dl dt')[:max_items]:
-                          a = item.select_one('a')
-                          info = item.select_one('span')
-                          if a:
-                              results.append({
-                                  'title': a.get_text(strip=True)[:80],
-                                  'url': 'https://torrentz2.nz' + a.get('href', ''),
-                                  'info': info.get_text(strip=True) if info else ''
-                              })
-                      if results:
-                          ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-                          qs = re.sub(r'[^\w]', '_', query)[:30]
-                          Path('searches').mkdir(exist_ok=True)
-                          f = Path(f'searches/{qs}_{ts}.md')
-                          md = f'# 🧲 {query}\n\n| # | Title | Info | Link |\n|---|-------|------|------|\n'
-                          for i, r in enumerate(results, 1):
-                              md += f'| {i} | {r["title"]} | {r["info"]} | [Page]({r["url"]}) |\n'
-                          f.write_text(md)
-                          print(f'✅ گزارش: {f}')
+                      magnet_tag = soup.select_one('a[href^="magnet:"]')
+                      if magnet_tag:
+                          magnet = magnet_tag.get('href')
                       else:
-                          print('😞 هیچی پیدا نشد')
-                  else:
-                      print(f'⚠️ {resp.status_code}')
-              except Exception as e:
-                  print(f'❌ {e}')
-
-          # =================================================================
-          #  ۲. دانلود تورنت (با Google Apps Script)
-          # =================================================================
-          elif mode == 'torrent-download (دانلود از لینک/مگنت)':
-              magnet = query if query.startswith('magnet:') else None
+                          found = re.findall(r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^\s"\'<>]*', resp.text)
+                          if found:
+                              magnet = found[0]
+                      
+                      if magnet:
+                          m = re.search(r'btih:([a-fA-F0-9]{40})', magnet)
+                          if m:
+                              info_hash = m.group(1).lower()
+                      
+                      # اگه مگنت نبود، info_hash رو از صفحه بگیر
+                      if not info_hash:
+                          hash_match = re.search(r'([a-fA-F0-9]{40})', resp.text)
+                          if hash_match:
+                              info_hash = hash_match.group(1).lower()
               
-              # اگه لینک صفحه بود، برو مگنت رو استخراج کن
-              if not magnet:
-                  print(f'🕷️ استخراج مگنت از: {query}')
-                  try:
-                      resp = requests.get(query, headers=H, timeout=15, allow_redirects=True)
-                      if resp.status_code == 200:
-                          soup = BeautifulSoup(resp.text, 'html.parser')
-                          magnet_tag = soup.select_one('a[href^="magnet:"]')
-                          if magnet_tag:
-                              magnet = magnet_tag.get('href')
-                              print(f'✅ مگنت پیدا شد!')
-                          else:
-                              found = re.findall(r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^\s"\'<>]*', resp.text)
-                              if found:
-                                  magnet = found[0]
-                                  print(f'✅ مگنت استخراج شد!')
-                      else:
-                          print(f'❌ خطای {resp.status_code}')
-                          sys.exit(1)
-                  except Exception as e:
-                      print(f'❌ {e}')
-                      sys.exit(1)
-              
-              if not magnet:
-                  print('❌ هیچ مگنتی پیدا نشد!')
+              if not info_hash:
+                  print('❌ نتونستم info_hash رو پیدا کنم')
                   sys.exit(1)
-
-              # استفاده از Google Apps Script به جای webtor.io
-              print(f'🚀 ارسال به Google Apps Script...')
-              try:
-                  script_req = f'{SCRIPT_URL}?magnet={quote_plus(magnet)}'
-                  resp = requests.get(script_req, headers=H, timeout=60)
+              
+              print(f'✅ Info Hash: {info_hash}')
+              
+              # دانلود فایل تورنت
+              torrent_url = f'https://itorrents.org/torrent/{info_hash}.torrent'
+              torrent_path = Path('/tmp/') / f'{info_hash}.torrent'
+              
+              print(f'📥 دانلود فایل تورنت...')
+              subprocess.run(['curl', '-L', '-o', str(torrent_path), torrent_url], check=False)
+              
+              if torrent_path.exists() and torrent_path.stat().st_size > 0:
+                  print(f'✅ فایل تورنت دریافت شد')
                   
-                  if resp.status_code == 200:
-                      files = resp.json()
-                      if isinstance(files, dict) and 'error' in files:
-                          print(f'❌ {files["error"]}')
-                          sys.exit(1)
-                      
-                      if not files:
-                          print('😞 فایلی پیدا نشد')
-                          sys.exit(1)
-                      
-                      print(f'🎬 {len(files)} فایل برای دانلود')
-                      out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
-                      out_dir.mkdir(parents=True, exist_ok=True)
-                      
-                      for i, vf in enumerate(files[:max_items], 1):
-                          name = vf.get('name', f'file_{i}')
-                          size = vf.get('size', 0)
-                          dl_url = vf.get('url', '')
-                          
-                          print(f'\n📥 [{i}/{min(len(files), max_items)}] {name} ({size/1e6:.1f}MB)')
-                          
-                          filepath = out_dir / name
-                          ret = subprocess.run([
-                              'curl', '-L', '--retry', '3', '--max-time', '600',
-                              '-A', H['User-Agent'], '-o', str(filepath), dl_url
-                          ], check=False)
-                          
-                          if ret.returncode == 0 and filepath.exists() and filepath.stat().st_size > 0:
-                              actual_size = filepath.stat().st_size / 1e6
-                              print(f'   ✅ {actual_size:.1f}MB')
-                              
-                              if split_mb > 0 and actual_size > split_mb:
-                                  print(f'   ✂️ تکه‌تکه کردن...')
-                                  subprocess.run([
-                                      'zip', '-j', '-s', f'{split_mb}m',
-                                      str(filepath) + '.zip', str(filepath)
-                                  ], check=False)
-                                  filepath.unlink()
-                          else:
-                              print(f'   ❌ ناموفق')
-                  else:
-                      print(f'❌ خطای Script: {resp.status_code}')
-              except Exception as e:
-                  print(f'❌ خطا: {e}')
+                  out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
+                  out_dir.mkdir(parents=True, exist_ok=True)
+                  
+                  # دانلود با aria2c
+                  print(f'🚀 شروع دانلود با aria2c...')
+                  subprocess.run([
+                      'aria2c',
+                      '--seed-time=0',
+                      '--max-connection-per-server=4',
+                      '--split=4',
+                      '--min-split-size=1M',
+                      '--dir=' + str(out_dir),
+                      str(torrent_path)
+                  ], check=False)
+                  
+                  # پاک کردن فایل تورنت
+                  torrent_path.unlink()
+                  
+                  # تیکه‌تکه کردن فایل‌ها
+                  for f in out_dir.iterdir():
+                      if f.is_file():
+                          size_mb = f.stat().st_size / 1e6
+                          print(f'✅ {f.name} ({size_mb:.1f}MB)')
+                          if split_mb > 0 and size_mb > split_mb:
+                              print(f'✂️ تیکه‌تکه...')
+                              subprocess.run(['zip', '-j', '-s', f'{split_mb}m', str(f) + '.zip', str(f)], check=False)
+                              f.unlink()
+              else:
+                  print('❌ نتونستم فایل تورنت رو دریافت کنم')
           PYEOF
 
       - name: 📤 آپلود
@@ -200,5 +191,5 @@ jobs:
           mkdir -p downloads searches
           git add downloads/ searches/ 2>/dev/null
           git diff --cached --quiet && exit 0
-          git commit -m "📦 [${MODE}] ${QUERY:0:50}" --quiet
-          for i in 1 2 3; do git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null && exit 0; sleep 3; done
+          git commit -m "📦 ${QUERY:0:50}" --quiet
+          for i in 1 2 3; do git pull --rebase --quiet && git push --quiet && exit 0; sleep 3; done
