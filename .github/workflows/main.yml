@@ -1,278 +1,226 @@
-name: 🌐 Internet Downloader
+name: ⚡️ Omni Searcher
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: '🔄 Mode'
+        description: '🎯 موتور جستجو'
         required: true
         type: choice
         options:
-          - search
-          - download
-        default: 'search'
+          - piratebay (تورنت کلاسیک)
+          - torrentclaw (فیلم و بازی جدید)
+          - serpapi (فایل و وب معمولی)
+        default: 'piratebay (تورنت کلاسیک)'
       query:
-        description: '🔍 Search query OR direct download URL'
+        description: '🔍 عبارت جستجو'
         required: true
         type: string
-      filetype:
-        description: '📎 File type filter (e.g., mp4, zip, pdf) - only for search mode'
-        required: false
-        type: string
-        default: ''
       max_results:
-        description: '🔢 Max search results'
+        description: '🔢 حداکثر نتایج'
         required: false
         type: number
         default: 15
-      split_threshold_mb:
-        description: '📦 Split files > MB (0 = no split)'
-        required: false
-        type: number
-        default: 50
 
 env:
   PYTHONUNBUFFERED: '1'
 
 jobs:
-  internet-job:
-    name: 🌍 Internet Job
+  search:
+    name: 🔎 جستجوی قدرتمند
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 10
     permissions:
       contents: write
-
+    
     steps:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
-      - name: ⚡ Setup tools
+      - name: ⚡️ آماده‌سازی تسلیحات
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq aria2 zip curl python3-pip
+          sudo apt-get install -y -qq python3-pip
           pip3 install -q requests beautifulsoup4
 
-      - name: 🔍 SEARCH MODE
-        if: github.event.inputs.mode == 'search'
+      - name: 🎯 اجرای ماموریت جستجو
         env:
+          MODE: ${{ github.event.inputs.mode }}
           QUERY: ${{ github.event.inputs.query }}
-          FILETYPE: ${{ github.event.inputs.filetype }}
-          MAX_RESULTS: ${{ github.event.inputs.max_results }}
+          MAX: ${{ github.event.inputs.max_results }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
         run: |
           python3 << 'PYEOF'
-          import os, re, json, requests, hashlib
-          from bs4 import BeautifulSoup
+          import os, re, json, requests, hashlib, sys
           from datetime import datetime
           from pathlib import Path
           from urllib.parse import quote_plus
 
+          mode = os.environ['MODE']
           query = os.environ['QUERY'].strip()
-          filetype = os.environ['FILETYPE'].strip()
-          max_results = int(os.environ.get('MAX_RESULTS', 15))
-
-          # ساخت کوئری جستجو (اضافه کردن filetype اگر خواسته بود)
-          search_q = query
-          if filetype:
-              search_q += f' filetype:{filetype}'
-
-          print(f'🔍 Searching for: "{search_q}" (max {max_results} results)')
-
-          # استفاده از DuckDuckGo Lite (صفحه ساده‌تر و قابل scrape)
-          url = f'https://lite.duckduckgo.com/lite/'
-          headers = {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          }
-          params = {'q': search_q, 's': 0, 'dc': max_results}
+          max_r = int(os.environ.get('MAX', 15))
 
           results = []
-          page = 0
-          while len(results) < max_results and page < 3:
-              params['s'] = page * 30
-              try:
-                  resp = requests.get(url, params=params, headers=headers, timeout=15)
-                  soup = BeautifulSoup(resp.text, 'html.parser')
-                  # لینک‌های نتایج در این کلاس‌ها هستند (برای lite)
-                  for row in soup.select('tr.result-row'):
-                      title_td = row.find('td', class_='result-snippet')
-                      link_td = row.find('td', class_='result-link')
-                      if not title_td or not link_td:
-                          continue
-                      title = title_td.get_text(strip=True)
-                      link = link_td.get_text(strip=True)
-                      # فیلتر کردن لینک‌های غیرمستقیم و تکراری
-                      if not link.startswith('http'):
-                          continue
-                      # حذف لینک‌های خود duckduckgo
-                      if 'duckduckgo.com' in link:
-                          continue
-                      # سعی می‌کنیم تشخیص بدیم لینک مستقیم به فایله یا نه
-                      file_ext = re.search(r'\.(\w{2,4})$', link.split('?')[0])
-                      is_direct = False
-                      if file_ext:
-                          is_direct = True
-                      # حتی اگر مستقیم نباشه هم نمایش می‌دیم، ولی علامت می‌زنیم
-                      results.append({
-                          'title': title[:80],
-                          'url': link,
-                          'direct': is_direct,
-                          'ext': file_ext.group(1) if file_ext else ''
-                      })
-                      if len(results) >= max_results:
-                          break
-                  page += 1
-              except Exception as e:
-                  print(f'   ⚠️ Error during search: {e}')
-                  break
+          engine_name = ""
 
-          # ذخیره در پوشه searches
+          # ─── ۱. حمله به PirateBay ───
+          if 'piratebay' in mode:
+              engine_name = "PirateBay (apibay)"
+              print(f'🏴‍☠️ جستجو در {engine_name}: {query}')
+              try:
+                  url = f'https://apibay.org/q.php?q={quote_plus(query)}&cat=0'
+                  resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+                  if resp.status_code == 200 and resp.text.strip():
+                      data = resp.json()
+                      if isinstance(data, list) and len(data) > 0 and data[0].get('name') != 'No results returned':
+                          for item in data[:max_r]:
+                              name = item.get('name', 'Unknown')
+                              info_hash = item.get('info_hash', '')
+                              seeders = item.get('seeders', 0)
+                              leechers = item.get('leechers', 0)
+                              size = int(item.get('size', 0))
+                              size_str = f'{size/1e9:.2f} GB' if size >= 1e9 else f'{size/1e6:.2f} MB'
+                              magnet = f'magnet:?xt=urn:btih:{info_hash}&dn={quote_plus(name)}'
+                              results.append({
+                                  'title': name[:80],
+                                  'url': magnet,
+                                  'info': f'Seed: {seeders} | Leech: {leechers} | Size: {size_str}',
+                                  'direct': True,
+                                  'ext': 'magnet'
+                              })
+              except Exception as e:
+                  print(f'   ⚠️ خطا: {e}')
+
+          # ─── ۲. حمله به TorrentClaw ───
+          elif 'torrentclaw' in mode:
+              engine_name = "TorrentClaw (Media)"
+              print(f'🦞 جستجو در {engine_name}: {query}')
+              try:
+                  # TorrentClaw API رایگان و بدون کلید (مستندات رسمی)
+                  url = f'https://api.torrentclaw.com/v1/search?query={quote_plus(query)}&limit={max_r}'
+                  resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+                  if resp.status_code == 200:
+                      data = resp.json()
+                      if isinstance(data, list):
+                          for item in data:
+                              name = item.get('title', 'Unknown')
+                              magnet = item.get('magnet', '') or item.get('link', '')
+                              size = item.get('size', 'N/A')
+                              seeders = item.get('seeders', 'N/A')
+                              results.append({
+                                  'title': name[:80],
+                                  'url': magnet,
+                                  'info': f'Seed: {seeders} | Size: {size}',
+                                  'direct': True,
+                                  'ext': 'magnet'
+                              })
+              except Exception as e:
+                  print(f'   ⚠️ خطا: {e}')
+
+          # ─── ۳. جستجوی وب معمولی (SerpAPI) ───
+          elif 'serpapi' in mode:
+              engine_name = "Google (SerpAPI)"
+              api_key = os.environ.get('SERPAPI_KEY', '')
+              if not api_key:
+                  print('❌ کلید SerpAPI تنظیم نشده! لطفا در Secrets مخزن ذخیره کن.')
+                  sys.exit(1)
+              try:
+                  url = 'https://serpapi.com/search'
+                  params = {
+                      'api_key': api_key,
+                      'q': query,
+                      'num': max_r,
+                      'engine': 'google'
+                  }
+                  resp = requests.get(url, params=params, timeout=15)
+                  if resp.status_code == 200:
+                      data = resp.json()
+                      for r in data.get('organic_results', []):
+                          link = r.get('link', '')
+                          title = r.get('title', 'Unknown')
+                          file_ext = re.search(r'\.(\w{2,4})$', link.split('?')[0])
+                          results.append({
+                              'title': title[:80],
+                              'url': link,
+                              'info': r.get('snippet', '')[:120],
+                              'direct': bool(file_ext),
+                              'ext': file_ext.group(1) if file_ext else ''
+                          })
+              except Exception as e:
+                  print(f'   ⚠️ خطا: {e}')
+
+          # ─── ذخیره نتایج ───
+          if not results:
+              print('😞 هیچ نتیجه‌ای پیدا نشد.')
+              sys.exit(0)
+
           ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
           qs = re.sub(r'[^\w]', '_', query)[:30]
           search_dir = Path('searches')
           search_dir.mkdir(exist_ok=True)
           report_file = search_dir / f'{qs}_{ts}.md'
 
-          md = f'# 🔍 Search: {query}\n\n'
-          md += f'**Date:** {datetime.now():%Y-%m-%d %H:%M} | **Results:** {len(results)}\n\n'
-          md += f'| # | Title | Link | Direct? | Type |\n'
-          md += f'|---|-------|------|---------|------|\n'
+          md = f'# {engine_name}\n\n'
+          md += f'**Query:** `{query}` | **Results:** {len(results)}\n\n'
+          md += '| # | Title | Info | Link/Info |\n'
+          md += '|---|-------|------|------------|\n'
           for i, r in enumerate(results, 1):
-              direct_str = '✅' if r['direct'] else '❌'
-              md += f'| {i} | {r["title"]} | [{r["url"][:60]}...]({r["url"]}) | {direct_str} | {r["ext"]} |\n'
-          md += '\n---\n\n'
-          md += '## 📄 Details\n\n'
+              title = r['title'].replace('|', '/')
+              info = r.get('info', '').replace('|', '/')
+              if r.get('url', '').startswith('magnet'):
+                  link_str = f'[MAGNET]({r["url"]})'
+              else:
+                  link_str = f'[Link]({r["url"]})'
+              md += f'| {i} | {title} | {info} | {link_str} |\n'
+
+          md += '\n---\n\n## 📝 جزئیات کامل\n\n'
           for i, r in enumerate(results, 1):
               md += f'### {i}. {r["title"]}\n\n'
-              md += f'**URL:** {r["url"]}\n\n'
-              md += f'**Direct File:** {direct_str}\n\n'
-              if r['direct']:
-                  md += f'**File Type:** .{r["ext"]}\n\n'
-              md += '---\n\n'
+              if r['url'].startswith('magnet'):
+                  md += f'```text\n{r["url"]}\n```\n\n'
+              else:
+                  md += f'**URL:** {r["url"]}\n\n'
+              if r.get('direct'):
+                  md += f'**⚠️ لینک مستقیم فایل:** بله (.{r.get("ext")})\n\n'
+              md += f'**اطلاعات:** {r.get("info")}\n\n---\n\n'
 
           report_file.write_text(md)
-          print(f'✅ Report saved: {report_file}')
-          
-          # ذخیره metadata برای commit message
-          Path('/tmp/search_meta.json').write_text(json.dumps({
-              'query': query, 'count': len(results)
-          }))
+          print(f'✅ گزارش نهایی: {report_file}')
           PYEOF
 
-      - name: 📥 DOWNLOAD MODE
-        if: github.event.inputs.mode == 'download'
-        env:
-          URL: ${{ github.event.inputs.query }}
-          SPLIT_THRESHOLD_MB: ${{ github.event.inputs.split_threshold_mb }}
-        run: |
-          #!/bin/bash
-          set -e
-          URL="$URL"
-          SPLIT_MB="${SPLIT_THRESHOLD_MB:-50}"
-          WORK_DIR="$HOME/work"
-          OUT_DIR="$HOME/out"
-          mkdir -p "$WORK_DIR" "$OUT_DIR"
-
-          # استخراج اسم فایل از URL
-          FILENAME=$(basename "$URL" | sed 's/[?#].*//; s/%20/ /g')
-          [ -z "$FILENAME" ] && FILENAME="download_$(date +%s)"
-
-          echo "📥 Downloading: $FILENAME"
-          
-          # دانلود با aria2
-          aria2c -x4 -s4 --max-tries=5 --retry-wait=10 --timeout=120 \
-            --dir="$WORK_DIR" --out="$FILENAME" \
-            --check-certificate=false --allow-overwrite=true "$URL" || {
-            echo "🔄 Retrying with curl..."
-            curl -L --retry 5 --retry-delay 10 -A "Mozilla/5.0" -o "$WORK_DIR/$FILENAME" "$URL"
-          }
-
-          if [ ! -f "$WORK_DIR/$FILENAME" ] || [ ! -s "$WORK_DIR/$FILENAME" ]; then
-            echo "❌ Download failed or file empty"
-            exit 1
-          fi
-
-          SIZE=$(du -h "$WORK_DIR/$FILENAME" | cut -f1)
-          echo "✅ Downloaded: $SIZE"
-
-          # زیپ کردن و تیکه‌تکه کردن
-          NAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//' | tr ' ' '_')
-          FOLDER="$OUT_DIR/$NAME"
-          mkdir -p "$FOLDER"
-          echo "📦 Packing into $FOLDER"
-
-          if [ "$SPLIT_MB" -gt 0 ] && [ $(stat -c%s "$WORK_DIR/$FILENAME") -gt $((SPLIT_MB * 1024 * 1024)) ]; then
-            echo "✂️ Splitting into ${SPLIT_MB}MB parts..."
-            zip -j -s ${SPLIT_MB}m "$FOLDER/$NAME.zip" "$WORK_DIR/$FILENAME"
-          else
-            zip -j "$FOLDER/$NAME.zip" "$WORK_DIR/$FILENAME"
-          fi
-
-          # ساخت یک README ساده
-          echo "# $NAME" > "$FOLDER/README.md"
-          echo "" >> "$FOLDER/README.md"
-          echo "| # | File | Link |" >> "$FOLDER/README.md"
-          echo "|---|------|------|" >> "$FOLDER/README.md"
-          REPO="${{ github.repository }}"
-          BRANCH="${{ github.ref_name }}"
-          i=1
-          for f in $(ls "$FOLDER" | grep -v README | sort); do
-            ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$f'))" 2>/dev/null || echo "$f")
-            echo "| $i | $f | [Download](https://github.com/$REPO/raw/$BRANCH/downloads/$NAME/$ENC) |" >> "$FOLDER/README.md"
-            i=$((i+1))
-          done
-
-          echo "OUT_DIR=$OUT_DIR" >> $GITHUB_ENV
-
-      - name: 📤 Commit and Push
+      - name: 📤 انتشار نتایج روی گیت‌هاب
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "bot@github.com"
           
-          echo "📦 Preparing to push..."
-          # اگر در مود search بود، فقط پوشه searches را اضافه کن
-          if [ "${{ github.event.inputs.mode }}" = "search" ]; then
-            mkdir -p searches
-            # محتوای جستجو قبلاً ایجاد شده
-            echo "🔍 Adding search results..."
-          elif [ "${{ github.event.inputs.mode }}" = "download" ]; then
-            mkdir -p downloads
-            rm -rf downloads/*
-            cp -r $OUT_DIR/* downloads/ 2>/dev/null || true
-            echo "📥 Adding downloaded files..."
-          fi
-
-          git add -A
+          echo "📦 آماده‌سازی برای آپلود..."
+          mkdir -p searches
+          git add searches/
           
           TOTAL=$(git diff --cached --name-only | wc -l)
-          echo "   Files to commit: $TOTAL"
-          if [ $TOTAL -eq 0 ]; then
-            echo "Nothing to push, exiting."
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "😴 چیز جدیدی برای آپلود نیست."
             exit 0
           fi
           
-          git diff --cached --name-only | while read f; do echo "   📎 $f"; done
+          echo "   📊 فایل‌های تغییر کرده: $TOTAL"
+          git diff --cached --name-only | while read f; do echo "      📎 $f"; done
           
-          # پیغام commit بستگی به مود
-          MODE="${{ github.event.inputs.mode }}"
           QUERY="${{ github.event.inputs.query }}"
-          if [ "$MODE" = "search" ]; then
-            COMMIT_MSG="🔍 Search: ${QUERY:0:50} [skip ci]"
-          else
-            COMMIT_MSG="📥 Download: ${QUERY:0:50} [skip ci]"
-          fi
-          
-          git commit -m "$COMMIT_MSG" --quiet
+          MODE="${{ github.event.inputs.mode }}"
+          git commit -m "🔍 جستجو [${MODE}]: ${QUERY:0:50} [skip ci]" --quiet
           
           for i in 1 2 3 4 5; do
-            echo -n "   🚀 Push attempt $i/5..."
+            echo -n "   🚀 تلاش $i..."
             if git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null; then
-              echo " ✅ Done!"
+              echo " ✅ پایان ماموریت!"
               exit 0
             fi
             echo " ❌"
             git rebase --abort 2>/dev/null || true
             [ $i -lt 5 ] && sleep $((i*5))
           done
-          echo "❌ Push failed"
+          echo "💀 آپلود ناموفق - احتمالاً حجم بالا یا قطعی نت"
           exit 1
