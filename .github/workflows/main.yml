@@ -20,6 +20,12 @@ on:
         required: false
         type: number
         default: 3
+      video_quality:
+        description: '🎬 حداکثر کیفیت ویدیو (best = بدون تغییر)'
+        required: false
+        type: choice
+        options: [best, 1080, 720, 480, 360]
+        default: '480'
       split_mb:
         description: '📦 تکه کردن > MB (0=نه)'
         required: false
@@ -31,7 +37,7 @@ env:
 
 jobs:
   torrent-job:
-    name: ⚡️ دانلود مستقیم تورنت
+    name: ⚡️ تورنت حرفه‌ای
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
@@ -45,22 +51,24 @@ jobs:
       - name: 🛠️ نصب ابزارها
         run: |
           sudo apt-get update -qq 2>/dev/null || true
-          sudo apt-get install -y -qq curl zip python3-pip 2>/dev/null || true
-          pip3 install -q requests beautifulsoup4 libtorrent 2>/dev/null || true
+          sudo apt-get install -y -qq curl zip python3-pip ffmpeg 2>/dev/null || true
+          pip3 install -q requests beautifulsoup4 2>/dev/null
+          pip3 install python-libtorrent 2>/dev/null || true
           echo "✅ آماده!"
 
-      - name: 🎯 اجرای ماموریت
+      - name: 🎯 اجرا
         env:
           MODE: ${{ github.event.inputs.mode }}
           QUERY: ${{ github.event.inputs.query }}
           MAX: ${{ github.event.inputs.max_items }}
           SPLIT_MB: ${{ github.event.inputs.split_mb }}
+          VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
         run: |
           python3 << 'PYEOF'
-          import os, re, sys, subprocess, hashlib
+          import os, re, sys, subprocess, time
           from pathlib import Path
           from datetime import datetime
-          from urllib.parse import quote_plus, urljoin
+          from urllib.parse import quote_plus
           import requests
           from bs4 import BeautifulSoup
 
@@ -68,11 +76,42 @@ jobs:
           query = os.environ['QUERY'].strip()
           max_items = int(os.environ.get('MAX', 3))
           split_mb = int(os.environ.get('SPLIT_MB', 70))
+          video_quality = os.environ.get('VIDEO_QUALITY', '480')
 
           H = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
+          def format_size(size_bytes):
+              if size_bytes >= 1e9:
+                  return f'{size_bytes/1e9:.2f} GB'
+              elif size_bytes >= 1e6:
+                  return f'{size_bytes/1e6:.1f} MB'
+              elif size_bytes >= 1e3:
+                  return f'{size_bytes/1e3:.1f} KB'
+              else:
+                  return f'{size_bytes} B'
+
+          def compress_video(input_path, output_path, target_height):
+              """فشرده‌سازی ویدیو به کیفیت پایین‌تر"""
+              if target_height == 'best':
+                  return input_path
+              
+              print(f'   🔄 فشرده‌سازی به حداکثر {target_height}p...')
+              cmd = [
+                  'ffmpeg', '-i', str(input_path),
+                  '-vf', f'scale=-2:{target_height}',
+                  '-c:v', 'libx264', '-crf', '23',
+                  '-c:a', 'aac', '-b:a', '128k',
+                  '-movflags', '+faststart',
+                  '-y', str(output_path)
+              ]
+              subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+              if output_path.exists() and output_path.stat().st_size > 0:
+                  os.remove(input_path)
+                  return output_path
+              return input_path
+
           # =================================================================
-          # ۱. جستجوی تورنت (Torrentz2)
+          # ۱. جستجوی تورنت (با حجم!)
           # =================================================================
           if mode == 'search (جستجوی تورنت)':
               print(f'🧲 جستجو: {query}')
@@ -82,138 +121,188 @@ jobs:
                   results = []
                   for item in soup.select('dl dt')[:max_items]:
                       a = item.select_one('a')
-                      info = item.select_one('span')
+                      info_span = item.select_one('span')
                       if a:
+                          title = a.get_text(strip=True)[:80]
+                          url = 'https://torrentz2.nz' + a.get('href', '')
+                          info = info_span.get_text(strip=True) if info_span else ''
+                          
+                          # استخراج حجم از info (معمولاً مثل "1.36 GB" یا "850 MB")
+                          size_match = re.search(r'([\d.]+)\s*(GB|MB|KB)', info, re.IGNORECASE)
+                          size_str = f'{size_match.group(1)} {size_match.group(2).upper()}' if size_match else 'نامشخص'
+                          
                           results.append({
-                              'title': a.get_text(strip=True)[:80],
-                              'url': 'https://torrentz2.nz' + a.get('href', ''),
-                              'info': info.get_text(strip=True) if info else ''
+                              'title': title,
+                              'url': url,
+                              'info': info,
+                              'size': size_str
                           })
+                  
                   if results:
                       ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
                       qs = re.sub(r'[^\w]', '_', query)[:30]
                       Path('searches').mkdir(exist_ok=True)
                       f = Path(f'searches/{qs}_{ts}.md')
-                      md = f'# 🧲 {query}\n\n| # | Title | Info | Link |\n|---|-------|------|------|\n'
+                      md = f'# 🧲 {query}\n\n| # | Title | Size | Seed/Leech | Link |\n|---|-------|------|------------|------|\n'
                       for i, r in enumerate(results, 1):
-                          md += f'| {i} | {r["title"]} | {r["info"]} | [Page]({r["url"]}) |\n'
+                          md += f'| {i} | {r["title"][:50]} | {r["size"]} | {r["info"][:30]} | [Page]({r["url"]}) |\n'
                       f.write_text(md)
-                      print(f'✅ {f}')
+                      print(f'✅ گزارش: {f}')
                   else:
                       print('😞 هیچی پیدا نشد')
+              else:
+                  print(f'⚠️ {resp.status_code}')
 
           # =================================================================
-          # ۲. دانلود تورنت (پردازش دستی با Python)
+          #  ۲. دانلود تورنت (با DHT, LSD و فشرده‌سازی)
           # =================================================================
           elif mode == 'download (دانلود تورنت)':
               magnet_link = query if query.startswith('magnet:') else None
               
               if not magnet_link:
                   print(f'🕷️ استخراج مگنت از: {query}')
-                  resp = requests.get(query, headers=H, timeout=15, allow_redirects=True)
-                  if resp.status_code == 200:
-                      soup = BeautifulSoup(resp.text, 'html.parser')
-                      m_tag = soup.select_one('a[href^="magnet:"]')
-                      if m_tag:
-                          magnet_link = m_tag.get('href')
-                      else:
-                          found = re.findall(r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^\s"\'<>]*', resp.text)
-                          if found:
-                              magnet_link = found[0]
-                  
-                  if not magnet_link:
-                      # یه بار دیگه با regex قوی‌تر
-                      hash_match = re.search(r'([a-fA-F0-9]{40})', resp.text)
-                      if hash_match:
-                          magnet_link = f'magnet:?xt=urn:btih:{hash_match.group(1)}'
+                  try:
+                      resp = requests.get(query, headers=H, timeout=15, allow_redirects=True)
+                      if resp.status_code == 200:
+                          soup = BeautifulSoup(resp.text, 'html.parser')
+                          m_tag = soup.select_one('a[href^="magnet:"]')
+                          if m_tag:
+                              magnet_link = m_tag.get('href')
+                          else:
+                              found = re.findall(r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^\s"\'<>]*', resp.text)
+                              if found:
+                                  magnet_link = found[0]
+                          if not magnet_link:
+                              hash_match = re.search(r'([a-fA-F0-9]{40})', resp.text)
+                              if hash_match:
+                                  magnet_link = f'magnet:?xt=urn:btih:{hash_match.group(1)}'
+                  except Exception as e:
+                      print(f'❌ {e}')
+                      sys.exit(1)
               
               if not magnet_link:
-                  print('❌ لینک مگنت پیدا نشد. مطمئنی تو یه صفحه تورنت هستی؟')
+                  print('❌ لینک مگنت پیدا نشد')
                   sys.exit(1)
               
               print(f'🧲 {magnet_link[:60]}...')
               
-              # --- پردازش با python-libtorrent ---
               try:
                   import libtorrent as lt
                   
                   ses = lt.session()
                   ses.listen_on(6881, 6891)
                   
+                  # فعال کردن DHT و LSD برای سرعت بیشتر
+                  settings = ses.get_settings()
+                  settings['enable_dht'] = True
+                  settings['enable_lsd'] = True
+                  settings['enable_upnp'] = True
+                  settings['enable_natpmp'] = True
+                  settings['connections_limit'] = 200
+                  settings['download_rate_limit'] = 0  # بدون محدودیت
+                  settings['upload_rate_limit'] = 0     # بدون محدودیت
+                  ses.set_settings(settings)
+                  
+                  # اضافه کردن روترهای DHT
+                  ses.add_dht_router('router.bittorrent.com', 6881)
+                  ses.add_dht_router('router.utorrent.com', 6881)
+                  ses.add_dht_router('dht.transmissionbt.com', 6881)
+                  
                   params = lt.parse_magnet_uri(magnet_link)
                   params.save_path = '/tmp/dl_torrent'
                   handle = ses.add_torrent(params)
                   
-                  print('⏳ در حال اتصال به تورنت و انتظار برای متادیتا...')
-                  import time
-                  timeout = 120  # ۲ دقیقه صبر کن
+                  print('⏳ اتصال به تورنت...')
+                  timeout = 300  # ۵ دقیقه صبر برای متادیتا
                   while not handle.has_metadata():
                       time.sleep(2)
                       timeout -= 2
                       if timeout <= 0:
-                          print('❌ وقت تموم شد! تورنت خیلی خلوت یا قطعه.')
+                          print('❌ وقت تموم شد!')
                           sys.exit(1)
                       s = handle.status()
-                      print(f'   Peers: {s.num_peers} | Seeds: {s.num_seeds}', end='\r')
+                      print(f'   Peers: {s.num_peers} | Seeds: {s.num_seeds} | DHT: {s.dht_nodes}', end='\r')
                   
                   print('\n✅ متادیتا دریافت شد. شروع دانلود...')
                   
                   out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
                   out_dir.mkdir(parents=True, exist_ok=True)
                   
-                  # دانلود همه فایل‌ها
                   handle.set_sequential_download(True)
                   
+                  last_progress = -1
                   while not handle.is_seed():
-                      time.sleep(1)
+                      time.sleep(2)
                       s = handle.status()
-                      print(f'\r📥 {s.progress * 100:.1f}% | ↓ {s.download_rate/1024:.0f} KB/s', end='')
+                      progress = s.progress * 100
+                      if int(progress) != last_progress:
+                          print(f'\r📥 {progress:.1f}% | ↓ {s.download_rate/1024:.0f} KB/s | ↑ {s.upload_rate/1024:.0f} KB/s | Peers: {s.num_peers}', end='')
+                          last_progress = int(progress)
                   
-                  print('\n✅ دانلود کامل شد!')
+                  print('\n✅ دانلود کامل شد! استخراج فایل‌ها...')
                   
-                  # ذخیره فایل‌ها
                   torinfo = handle.get_torrent_info()
                   files = torinfo.files()
+                  
+                  video_exts = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'm4v', 'ts']
+                  
                   for i_file in range(min(files.num_files(), max_items)):
                       f = files.file_at(i_file)
                       name = f.path.split('/')[-1]
                       filepath = out_dir / name
                       
-                      file_data = bytearray(f.size)
-                      offset = 0
-                      for piece_idx in range(torinfo.num_pieces()):
-                          piece_data = handle.read_piece(piece_idx)
-                          if piece_data:
-                              piece_start = piece_idx * torinfo.piece_length()
-                              file_start = max(0, f.offset - piece_start)
-                              file_end = min(len(piece_data), f.offset + f.size - piece_start)
-                              if file_start < file_end:
-                                  file_data[offset:offset+file_end-file_start] = piece_data[file_start:file_end]
+                      # خوندن فایل از تورنت
+                      with open(str(filepath), 'wb') as out_f:
+                          piece_size = torinfo.piece_length()
+                          total_size = f.size
+                          offset = 0
+                          while offset < total_size:
+                              chunk_size = min(1024*1024, total_size - offset)  # 1MB chunks
+                              data = handle.read_piece(offset // piece_size)
+                              if data:
+                                  piece_offset = offset % piece_size
+                                  if piece_offset + chunk_size <= len(data):
+                                      out_f.write(data[piece_offset:piece_offset+chunk_size])
+                              offset += chunk_size
                       
-                      filepath.write_bytes(file_data)
-                      size_mb = filepath.stat().st_size / 1e6
-                      print(f'✅ {name} ({size_mb:.1f}MB)')
-                      
-                      if split_mb > 0 and size_mb > split_mb:
-                          print(f'   ✂️ تکه‌تکه...')
-                          subprocess.run(['zip', '-j', '-s', f'{split_mb}m', str(filepath) + '.zip', str(filepath)], check=False)
-                          filepath.unlink()
+                      if filepath.exists() and filepath.stat().st_size > 0:
+                          size_mb = filepath.stat().st_size / 1e6
+                          print(f'✅ {name} ({size_mb:.1f}MB)')
+                          
+                          # فشرده‌سازی ویدیو اگه خواسته بود
+                          is_video = any(name.lower().endswith(ext) for ext in video_exts)
+                          if is_video and video_quality != 'best':
+                              compressed_path = out_dir / f'compressed_{name}'
+                              filepath = compress_video(filepath, compressed_path, video_quality)
+                              size_mb = filepath.stat().st_size / 1e6
+                              print(f'   📉 بعد از فشرده‌سازی: {size_mb:.1f}MB')
+                          
+                          # تیکه‌تکه کردن
+                          if split_mb > 0 and size_mb > split_mb:
+                              print(f'   ✂️ تیکه‌تکه...')
+                              subprocess.run([
+                                  'zip', '-j', '-s', f'{split_mb}m',
+                                  str(filepath) + '.zip', str(filepath)
+                              ], check=False)
+                              if list(filepath.parent.glob(f'{filepath.stem}.z*')):
+                                  filepath.unlink()
                   
                   ses.remove_torrent(handle)
+                  print('\n🎉 همه چی تموم شد!')
                   
               except ImportError:
-                  print('❌ کتابخونه libtorrent نصب نشد! تلاش برای نصب...')
-                  subprocess.run(['pip3', 'install', 'python-libtorrent'])
-                  print('🔄 لطفاً یه بار دیگه اجرا کن.')
+                  print('❌ کتابخونه libtorrent نصب نیست. درحال نصب...')
+                  subprocess.run(['pip3', 'install', 'python-libtorrent'], check=False)
+                  print('🔄 لطفاً دوباره اجرا کن.')
                   sys.exit(1)
           PYEOF
 
-      - name: 📤 آپلود نهایی
+      - name: 📤 آپلود
         run: |
           git config user.name "bot"
           git config user.email "bot@github.com"
           mkdir -p downloads searches
           git add downloads/ searches/ 2>/dev/null
           git diff --cached --quiet && exit 0
-          git commit -m "📦 دانلود ${QUERY:0:50}" --quiet
-          for i in 1 2 3; do git pull --rebase --quiet && git push --quiet && exit 0; sleep 3; done
+          git commit -m "📦 ${QUERY:0:50}" --quiet
+          for i in 1 2 3; do git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null && exit 0; sleep 3; done
