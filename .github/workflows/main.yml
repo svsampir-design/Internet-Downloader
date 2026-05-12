@@ -48,7 +48,7 @@ jobs:
 
           print(f'🚀 درخواست به Worker برای: {page_url}')
           try:
-              resp = requests.get(f'{WORKER_URL}/?url={page_url}', headers={'User-Agent': 'Mozilla/5.0'}, timeout=60)
+              resp = requests.get(f'{WORKER_URL}?url={page_url}', headers={'User-Agent': 'Mozilla/5.0'}, timeout=60)
               if resp.status_code != 200:
                   print(f'❌ Worker خطا داد: {resp.status_code}')
                   sys.exit(1)
