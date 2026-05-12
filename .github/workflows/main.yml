@@ -1,4 +1,4 @@
-name: 🌐 Omni-Sniffer v3
+name: 🌐 Omni-Sniffer v5
 
 on:
   workflow_dispatch:
@@ -8,32 +8,27 @@ on:
         required: true
         type: choice
         options:
-          - torrent (جستجوی تورنت)
-          - torrent-download (دانلود از مگنت/تورنت)
-          - media (شکار ویدیو از صفحه وب)
-        default: 'torrent-download (دانلود از مگنت/تورنت)'
+          - torrent-search (جستجوی تورنت)
+          - torrent-download (دانلود از لینک صفحه/مگنت)
+          - media-hunter (شکار ویدیو از وب‌سایت)
+        default: 'torrent-download (دانلود از لینک صفحه/مگنت)'
       query:
-        description: '🔍 جستجو | 🧲 مگنت | 🌐 لینک صفحه'
+        description: '🔍 عبارت | 🧲 مگنت | 🌐 لینک صفحه'
         required: true
         type: string
       video_quality:
-        description: '🎬 کیفیت ویدیو'
+        description: '🎬 کیفیت (برای مود media و torrent)'
         required: false
         type: choice
-        options:
-          - best
-          - 1080
-          - 720
-          - 480
-          - 360
+        options: [best, 1080, 720, 480, 360]
         default: '480'
       max_items:
-        description: '🔢 حداکثر نتایج'
+        description: '🔢 حداکثر'
         required: false
         type: number
-        default: 5
+        default: 3
       split_mb:
-        description: '📦 تیکه کردن > MB (0=نه)'
+        description: '📦 تکه کردن > MB (0=نه)'
         required: false
         type: number
         default: 70
@@ -43,7 +38,7 @@ env:
 
 jobs:
   omni-job:
-    name: ⚡️ Omni Job
+    name: ⚡️ عملیات ساده
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -53,15 +48,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 1
 
-      - name: 🛠️ Setup
+      - name: 🛠️ نصب ابزارها
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq curl zip python3-pip
           pip3 install -q requests beautifulsoup4 yt-dlp
 
-      - name: 🎯 Execute
+      - name: 🎯 اجرا
         env:
           MODE: ${{ github.event.inputs.mode }}
           QUERY: ${{ github.event.inputs.query }}
@@ -70,7 +64,7 @@ jobs:
           VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
         run: |
           python3 << 'PYEOF'
-          import os, re, sys, subprocess, requests, json, time
+          import os, re, sys, subprocess, requests
           from datetime import datetime
           from pathlib import Path
           from urllib.parse import quote_plus, urljoin
@@ -78,181 +72,189 @@ jobs:
 
           mode = os.environ['MODE']
           query = os.environ['QUERY'].strip()
-          max_items = int(os.environ.get('MAX', 5))
+          max_items = int(os.environ.get('MAX', 3))
           split_mb = int(os.environ.get('SPLIT_MB', 70))
           video_quality = os.environ.get('VIDEO_QUALITY', '480')
 
-          H = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+          H = {'User-Agent': 'Mozilla/5.0'}
 
-          quality_map = {
-              'best': 'best',
-              '1080': 'best[height<=1080]',
-              '720': 'best[height<=720]',
-              '480': 'best[height<=480]',
-              '360': 'best[height<=360]'
-          }
-          yt_format = quality_map.get(video_quality, 'best[height<=480]')
-
-          # ===== MODE 1: SEARCH =====
-          if mode == 'torrent (جستجوی تورنت)':
-              print(f'🧲 جستجوی تورنت: {query}')
-              try:
-                  resp = requests.get(f'https://torrentz2.nz/search?q={quote_plus(query)}', headers=H, timeout=15)
-                  if resp.status_code == 200:
-                      soup = BeautifulSoup(resp.text, 'html.parser')
-                      results = []
-                      for item in soup.select('dl dt')[:max_items]:
-                          a = item.select_one('a')
-                          if a:
-                              results.append({
-                                  'title': a.get_text(strip=True)[:80],
-                                  'url': 'https://torrentz2.nz' + a.get('href', ''),
-                                  'info': item.select_one('span').get_text(strip=True) if item.select_one('span') else ''
-                              })
-                      
-                      if results:
-                          ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-                          qs = re.sub(r'[^\w]', '_', query)[:30]
-                          Path('searches').mkdir(exist_ok=True)
-                          f = Path(f'searches/{qs}_{ts}.md')
-                          md = f'# 🧲 {query}\n\n'
-                          md += '| # | Title | Info | Link |\n|---|-------|------|------|\n'
-                          for i, r in enumerate(results, 1):
-                              md += f'| {i} | {r["title"]} | {r["info"]} | [Link]({r["url"]}) |\n'
-                          f.write_text(md)
-                          print(f'✅ {f}')
-                      else:
-                          print('😞 هیچی پیدا نشد')
+          # =================================================================
+          #  ۱. جستجوی تورنت
+          # =================================================================
+          if 'search' in mode:
+              print(f'🧲 جستجو: {query}')
+              resp = requests.get(f'https://torrentz2.nz/search?q={quote_plus(query)}', headers=H, timeout=15)
+              if resp.status_code == 200:
+                  soup = BeautifulSoup(resp.text, 'html.parser')
+                  results = []
+                  for item in soup.select('dl dt')[:max_items]:
+                      a = item.select_one('a')
+                      info = item.select_one('span')
+                      if a:
+                          results.append({
+                              'title': a.get_text(strip=True)[:80],
+                              'url': 'https://torrentz2.nz' + a.get('href', ''),
+                              'info': info.get_text(strip=True) if info else ''
+                          })
+                  if results:
+                      ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+                      qs = re.sub(r'[^\w]', '_', query)[:30]
+                      Path('searches').mkdir(exist_ok=True)
+                      f = Path(f'searches/{qs}_{ts}.md')
+                      md = f'# 🧲 {query}\n\n| # | Title | Info | Link |\n|---|-------|------|------|\n'
+                      for i, r in enumerate(results, 1):
+                          md += f'| {i} | {r["title"]} | {r["info"]} | [Page]({r["url"]}) |\n'
+                      f.write_text(md)
+                      print(f'✅ گزارش: {f}')
                   else:
-                      print(f'⚠️ {resp.status_code}')
-              except Exception as e:
-                  print(f'❌ {e}')
-
-          # ===== MODE 2: TORRENT DOWNLOAD =====
-          elif 'torrent-download' in mode:
-              magnet = query.strip()
-              if not magnet.startswith('magnet:'):
-                  # شاید یه لینک torrent باشه
-                  if magnet.startswith('http'):
-                      print(f'📥 دانلود فایل تورنت: {magnet}')
-                      try:
-                          resp = requests.get(magnet, headers=H, timeout=15)
-                          if resp.status_code == 200:
-                              torrent_path = Path('/tmp/temp.torrent')
-                              torrent_path.write_bytes(resp.content)
-                              print(f'✅ فایل تورنت دانلود شد')
-                          else:
-                              print(f'❌ خطای {resp.status_code}')
-                              sys.exit(1)
-                      except Exception as e:
-                          print(f'❌ {e}')
-                          sys.exit(1)
-                  else:
-                      print('❌ لینک مگنت یا تورنت معتبر وارد کن')
-                      sys.exit(1)
+                      print('😞 هیچی پیدا نشد')
               else:
-                  print(f'🧲 مگنت دریافت شد')
-                  # دانلود فایل تورنت از مگنت
-                  try:
-                      subprocess.run([
-                          'curl', '-L', '-o', '/tmp/temp.torrent',
-                          f'https://itorrents.org/torrent/{magnet.split("btih:")[-1].split("&")[0]}.torrent'
-                      ], check=False, timeout=15)
-                  except:
-                      pass
+                  print(f'⚠️ {resp.status_code}')
 
-              out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
-              out_dir.mkdir(parents=True, exist_ok=True)
-
-              if Path('/tmp/temp.torrent').exists():
-                  print('🔄 استفاده از webtor.io برای تبدیل به لینک مستقیم...')
+          # =================================================================
+          #  ۲. دانلود تورنت (از لینک صفحه یا مگنت)
+          # =================================================================
+          elif 'download' in mode:
+              magnet = query if query.startswith('magnet:') else None
+              
+              # اگه لینک صفحه بود، برو مگنت رو استخراج کن
+              if not magnet:
+                  print(f'🕷️ استخراج مگنت از: {query}')
                   try:
-                      # Upload torrent to webtor.io
-                      with open('/tmp/temp.torrent', 'rb') as f:
-                          upload_resp = requests.post('https://webtor.io/api/torrents', files={'torrent': f}, timeout=30)
-                      if upload_resp.status_code == 200:
-                          data = upload_resp.json()
-                          info_hash = data.get('infoHash', '')
-                          if info_hash:
-                              print(f'✅ تورنت آپلود شد. InfoHash: {info_hash}')
-                              # حالا فایل‌ها رو لیست کن
-                              files_resp = requests.get(f'https://webtor.io/api/torrents/{info_hash}', timeout=15)
-                              if files_resp.status_code == 200:
-                                  files_data = files_resp.json()
-                                  files_list = files_data.get('files', [])
-                                  video_files = [f for f in files_list if any(f['name'].lower().endswith(ext) for ext in ['mp4', 'mkv', 'webm', 'avi'])]
-                                  
-                                  if video_files:
-                                      print(f'🎬 {len(video_files)} فایل ویدیویی پیدا شد')
-                                      for vf in video_files[:max_items]:
-                                          name = vf['name']
-                                          # لینک مستقیم از webtor.io
-                                          direct_url = f'https://webtor.io/api/torrents/{info_hash}/files/{quote_plus(name)}/download'
-                                          print(f'📥 دانلود: {name}')
-                                          # با curl دانلود کن
-                                          ret = subprocess.run([
-                                              'curl', '-L', '--retry', '3', '-A', H['User-Agent'],
-                                              '-o', str(out_dir / name), direct_url
-                                          ], check=False)
-                                          if ret.returncode == 0:
-                                              size = (out_dir / name).stat().st_size / 1e6
-                                              print(f'   ✅ {size:.1f}MB')
-                                              if split_mb > 0 and size > split_mb:
-                                                  subprocess.run(['zip', '-j', '-s', f'{split_mb}m', str(out_dir / name) + '.zip', str(out_dir / name)], check=False)
-                                                  (out_dir / name).unlink()
-                                  else:
-                                      print('😞 فایل ویدیویی در تورنت پیدا نشد')
+                      resp = requests.get(query, headers=H, timeout=15, allow_redirects=True)
+                      if resp.status_code == 200:
+                          soup = BeautifulSoup(resp.text, 'html.parser')
+                          # دنبال لینک مگنت بگرد (هر تگی که href با magnet: شروع بشه)
+                          magnet_tag = soup.select_one('a[href^="magnet:"]')
+                          if magnet_tag:
+                              magnet = magnet_tag.get('href')
+                              print(f'✅ مگنت پیدا شد!')
+                          else:
+                              # شاید تو خود متن صفحه باشه
+                              found = re.findall(r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^\s"\'<>]*', resp.text)
+                              if found:
+                                  magnet = found[0]
+                                  print(f'✅ مگنت استخراج شد!')
+                      else:
+                          print(f'❌ خطای {resp.status_code}')
+                          sys.exit(1)
                   except Exception as e:
                       print(f'❌ {e}')
-              else:
-                  print('❌ نتونستم فایل تورنت رو دریافت کنم')
-
-          # ===== MODE 3: MEDIA =====
-          elif 'media' in mode:
-              url = query
-              if not url.startswith('http'):
-                  url = 'https://' + url
+                      sys.exit(1)
               
-              print(f'🕷️ بررسی: {url}')
+              if not magnet:
+                  print('❌ هیچ مگنتی پیدا نشد!')
+                  sys.exit(1)
+
+              # حالا مگنت رو بده به webtor.io (مستقیم!)
+              print(f'🚀 ارسال به webtor.io...')
+              try:
+                  # استخراج info_hash از مگنت
+                  hash_match = re.search(r'btih:([a-fA-F0-9]{40})', magnet)
+                  if not hash_match:
+                      print('❌ مگنت نامعتبر')
+                      sys.exit(1)
+                  info_hash = hash_match.group(1).lower()
+                  
+                  # آپلود به webtor
+                  # اول فایل تورنت رو از itorrents بگیر
+                  torrent_url = f'https://itorrents.org/torrent/{info_hash}.torrent'
+                  torrent_resp = requests.get(torrent_url, headers=H, timeout=15)
+                  
+                  if torrent_resp.status_code == 200:
+                      # آپلود به webtor
+                      upload_resp = requests.post(
+                          'https://webtor.io/api/torrents',
+                          files={'torrent': ('file.torrent', torrent_resp.content)},
+                          timeout=30
+                      )
+                      if upload_resp.status_code == 200:
+                          data = upload_resp.json()
+                          new_hash = data.get('infoHash', '')
+                          
+                          # گرفتن لیست فایل‌ها
+                          files_resp = requests.get(f'https://webtor.io/api/torrents/{new_hash}', timeout=15)
+                          if files_resp.status_code == 200:
+                              files_data = files_resp.json()
+                              all_files = files_data.get('files', [])
+                              
+                              # فیلتر فایل‌های ویدیویی
+                              video_exts = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'm4v']
+                              videos = [f for f in all_files if any(f['name'].lower().endswith(ext) for ext in video_exts)]
+                              
+                              if not videos:
+                                  # اگه ویدیو نداشت، همه فایل‌ها رو بگیر
+                                  videos = all_files
+                              
+                              print(f'🎬 {len(videos)} فایل برای دانلود')
+                              
+                              out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
+                              out_dir.mkdir(parents=True, exist_ok=True)
+                              
+                              for i, vf in enumerate(videos[:max_items], 1):
+                                  name = vf['name']
+                                  size = vf.get('size', 0)
+                                  dl_url = f'https://webtor.io/api/torrents/{new_hash}/files/{quote_plus(name)}/download'
+                                  
+                                  print(f'\n📥 [{i}/{min(len(videos), max_items)}] {name} ({size/1e6:.1f}MB)')
+                                  
+                                  filepath = out_dir / name
+                                  ret = subprocess.run([
+                                      'curl', '-L', '--retry', '3', '--max-time', '600',
+                                      '-A', H['User-Agent'], '-o', str(filepath), dl_url
+                                  ], check=False)
+                                  
+                                  if ret.returncode == 0 and filepath.exists() and filepath.stat().st_size > 0:
+                                      actual_size = filepath.stat().st_size / 1e6
+                                      print(f'   ✅ {actual_size:.1f}MB')
+                                      
+                                      if split_mb > 0 and actual_size > split_mb:
+                                          print(f'   ✂️ تکه‌تکه کردن...')
+                                          subprocess.run([
+                                              'zip', '-j', '-s', f'{split_mb}m',
+                                              str(filepath) + '.zip', str(filepath)
+                                          ], check=False)
+                                          filepath.unlink()
+                                  else:
+                                      print(f'   ❌ ناموفق')
+                      else:
+                          print(f'❌ خطای آپلود: {upload_resp.status_code}')
+                  else:
+                      print(f'❌ تورنت پیدا نشد: {torrent_resp.status_code}')
+              except Exception as e:
+                  print(f'❌ خطا: {e}')
+
+          # =================================================================
+          #  ۳. شکار ویدیو از وب‌سایت
+          # =================================================================
+          elif 'hunter' in mode or 'media' in mode:
+              url = query if query.startswith('http') else f'https://{query}'
+              print(f'🕷️ شکار از: {url}')
               out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
               out_dir.mkdir(parents=True, exist_ok=True)
-
-              # yt-dlp
-              print('🎥 شکار با yt-dlp...')
+              
+              quality_map = {
+                  'best': 'best', '1080': 'best[height<=1080]', '720': 'best[height<=720]',
+                  '480': 'best[height<=480]', '360': 'best[height<=360]'
+              }
+              fmt = quality_map.get(video_quality, 'best[height<=480]')
+              
               subprocess.run([
-                  'yt-dlp', '--no-warnings', '--format', yt_format,
-                  '--output', str(out_dir / '%(title)s.%(ext)s'),
-                  '--merge-output-format', 'mp4',
-                  '--user-agent', H['User-Agent'],
-                  '--max-downloads', str(max_items),
-                  url
-              ], check=False)
-
-              # فایل‌های غیر ویدیویی
-              try:
-                  resp = requests.get(url, headers=H, timeout=15, allow_redirects=True)
-                  if resp.status_code == 200:
-                      soup = BeautifulSoup(resp.text, 'html.parser')
-                      base_url = resp.url
-                      for tag in soup.find_all('a'):
-                          href = tag.get('href', '')
-                          if href:
-                              full = urljoin(base_url, href)
-                              if any(full.lower().endswith(f'.{ext}') for ext in ['zip','rar','7z','exe','pdf','iso','apk','torrent']):
-                                  name = full.split('/')[-1].split('?')[0]
-                                  subprocess.run(['curl', '-L', '-A', H['User-Agent'], '-o', str(out_dir / name), full], check=False)
-              except: pass
+                  'yt-dlp', '-f', fmt, '-o', str(out_dir / '%(title)s.%(ext)s'),
+                  '--merge-output-format', 'mp4', '--user-agent', H['User-Agent'],
+                  '--max-downloads', str(max_items), url
+              ])
 
           PYEOF
 
-      - name: 📤 Push
+      - name: 📤 آپلود
         run: |
           git config user.name "bot"
           git config user.email "bot@github.com"
           mkdir -p downloads searches
-          git add downloads/ searches/
+          git add downloads/ searches/ 2>/dev/null
           git diff --cached --quiet && exit 0
-          git commit -m "📦 [${MODE}] $QUERY" --quiet
+          git commit -m "📦 [${MODE}] ${QUERY:0:50}" --quiet
           for i in 1 2 3; do
             git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null && exit 0
             sleep 3
