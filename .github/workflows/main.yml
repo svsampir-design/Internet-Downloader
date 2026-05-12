@@ -1,4 +1,4 @@
-name: 🧲 Torrent Pro Max
+name: 🧲 Torrent Fast
 
 on:
   workflow_dispatch:
@@ -8,36 +8,33 @@ on:
         required: true
         type: choice
         options:
-          - search (جستجوی تورنت)
-          - download (دانلود تورنت)
-        default: 'download (دانلود تورنت)'
+          - search (جستجو)
+          - download (دانلود)
+        default: 'download (دانلود)'
       query:
-        description: '🔍 عبارت | 🧲 مگنت | 🌐 لینک صفحه'
+        description: '🔍 عبارت | 🧲 مگنت | 🌐 لینک'
         required: true
         type: string
       max_items:
-        description: '🔢 حداکثر فایل'
+        description: '🔢 حداکثر'
         required: false
         type: number
         default: 3
       video_quality:
-        description: '🎬 حداکثر کیفیت (best=بدون تغییر)'
+        description: '🎬 کیفیت (best=بدون تغییر)'
         required: false
         type: choice
         options: [best, 1080, 720, 480, 360]
         default: '480'
       split_mb:
-        description: '📦 تکه کردن > MB (0=نه)'
+        description: '📦 تکه > MB (0=نه)'
         required: false
         type: number
         default: 70
 
-env:
-  PYTHONUNBUFFERED: '1'
-
 jobs:
-  torrent-job:
-    name: ⚡️ دانلود تورنت با Transmission
+  torrent:
+    name: ⚡️ سریع و خشمگین
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
@@ -48,18 +45,12 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🛠️ نصب ابزارها
+      - name: 🛠️ نصب
         run: |
           sudo apt-get update -qq 2>/dev/null || true
-          sudo apt-get install -y -qq curl zip python3-pip ffmpeg transmission-daemon transmission-cli 2>/dev/null || true
+          sudo apt-get install -y -qq curl zip python3-pip aria2 2>/dev/null || true
           pip3 install -q requests beautifulsoup4 2>/dev/null
-          # پیکربندی اولیه transmission
-          sudo systemctl stop transmission-daemon 2>/dev/null || true
-          mkdir -p ~/.config/transmission-daemon
-          echo '{"download-dir": "/tmp/dl", "incomplete-dir": "/tmp/incomplete", "rpc-whitelist": "127.0.0.1", "rpc-whitelist-enabled": false, "dht-enabled": true, "lds-enabled": true, "pex-enabled": true, "utp-enabled": true}' > ~/.config/transmission-daemon/settings.json
-          transmission-daemon -g ~/.config/transmission-daemon
-          sleep 2
-          echo "✅ Transmission آماده است!"
+          echo "✅ آماده!"
 
       - name: 🎯 اجرا
         env:
@@ -70,7 +61,7 @@ jobs:
           VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
         run: |
           python3 << 'PYEOF'
-          import os, re, sys, subprocess, time, shutil
+          import os, re, sys, subprocess, shutil
           from pathlib import Path
           from datetime import datetime
           from urllib.parse import quote_plus
@@ -83,153 +74,133 @@ jobs:
           split_mb = int(os.environ.get('SPLIT_MB', 70))
           video_quality = os.environ.get('VIDEO_QUALITY', '480')
 
-          H = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+          H = {'User-Agent': 'Mozilla/5.0'}
 
-          def format_size(sz):
-              for unit in ['B','KB','MB','GB']:
-                  if sz < 1024.0:
-                      return f"{sz:.1f} {unit}"
-                  sz /= 1024.0
-              return f"{sz:.1f} TB"
-
-          def compress_video(inp, outp, quality):
-              if quality == 'best':
-                  shutil.move(inp, outp)
-                  return outp
-              print(f'   🔄 فشرده‌سازی به {quality}p...')
-              subprocess.run([
-                  'ffmpeg', '-i', inp,
-                  '-vf', f'scale=-2:{quality}',
-                  '-c:v', 'libx264', '-crf', '23',
-                  '-c:a', 'aac', '-b:a', '128k',
-                  '-movflags', '+faststart',
-                  '-y', outp
-              ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-              if os.path.exists(outp) and os.path.getsize(outp) > 0:
-                  os.remove(inp)
-                  return outp
-              return inp
-
-          # ====== MODE: SEARCH ======
-          if mode == 'search (جستجوی تورنت)':
+          # ===== جستجو =====
+          if 'search' in mode:
               print(f'🧲 جستجو: {query}')
               resp = requests.get(f'https://torrentz2.nz/search?q={quote_plus(query)}', headers=H, timeout=15)
               if resp.status_code == 200:
                   soup = BeautifulSoup(resp.text, 'html.parser')
                   results = []
                   for item in soup.select('dl dt')[:max_items]:
-                      a = item.select_one('a')
-                      info = item.select_one('span')
+                      a = item.select_one('a'); info = item.select_one('span')
                       if a:
-                          title = a.get_text(strip=True)[:80]
-                          url = 'https://torrentz2.nz' + a.get('href', '')
+                          t = a.get_text(strip=True)[:80]
+                          u = 'https://torrentz2.nz' + a.get('href', '')
                           infotxt = info.get_text(strip=True) if info else ''
-                          # استخراج حجم
-                          s_m = re.search(r'([\d.]+)\s*(GB|MB|KB)', infotxt, re.I)
-                          sz = f'{s_m.group(1)} {s_m.group(2).upper()}' if s_m else 'نامشخص'
-                          results.append({'title': title, 'url': url, 'info': infotxt, 'size': sz})
+                          sm = re.search(r'([\d.]+)\s*(GB|MB|KB)', infotxt, re.I)
+                          sz = f'{sm.group(1)} {sm.group(2).upper()}' if sm else 'نامشخص'
+                          results.append({'t':t,'u':u,'i':infotxt,'s':sz})
                   if results:
                       ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
                       qs = re.sub(r'[^\w]', '_', query)[:30]
                       Path('searches').mkdir(exist_ok=True)
                       f = Path(f'searches/{qs}_{ts}.md')
-                      md = f'# 🧲 {query}\n\n| # | Title | Size | Seed/Leech | Link |\n|---|-------|------|------------|------|\n'
-                      for i, r in enumerate(results, 1):
-                          md += f'| {i} | {r["title"][:50]} | {r["size"]} | {r["info"][:30]} | [Page]({r["url"]}) |\n'
+                      md = f'# 🧲 {query}\n\n| # | Title | Size | Info | Link |\n|---|-------|------|------|------|\n'
+                      for i,r in enumerate(results,1):
+                          md += f'| {i} | {r["t"][:50]} | {r["s"]} | {r["i"][:30]} | [Page]({r["u"]}) |\n'
                       f.write_text(md)
-                      print(f'✅ گزارش: {f}')
-                  else:
-                      print('😞 هیچی پیدا نشد')
-              else:
-                  print(f'⚠️ {resp.status_code}')
+                      print(f'✅ {f}')
+                  else: print('😞 هیچی')
 
-          # ====== MODE: DOWNLOAD ======
-          elif mode == 'download (دانلود تورنت)':
-              magnet_link = query if query.startswith('magnet:') else None
-              if not magnet_link:
-                  print(f'🕷️ استخراج مگنت از: {query}')
-                  try:
-                      resp = requests.get(query, headers=H, timeout=15, allow_redirects=True)
-                      if resp.status_code == 200:
-                          soup = BeautifulSoup(resp.text, 'html.parser')
-                          m_tag = soup.select_one('a[href^="magnet:"]')
-                          if m_tag:
-                              magnet_link = m_tag.get('href')
-                          else:
-                              found = re.findall(r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^\s"\'<>]*', resp.text)
-                              if found:
-                                  magnet_link = found[0]
-                          if not magnet_link:
-                              h = re.search(r'([a-fA-F0-9]{40})', resp.text)
-                              if h:
-                                  magnet_link = f'magnet:?xt=urn:btih:{h.group(1)}'
-                  except Exception as e:
-                      print(f'❌ {e}')
-                      sys.exit(1)
-              if not magnet_link:
+          # ===== دانلود =====
+          elif 'download' in mode:
+              # استخراج مگنت
+              magnet = query if query.startswith('magnet:') else None
+              if not magnet:
+                  resp = requests.get(query, headers=H, timeout=15)
+                  m = re.search(r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}[^\s"\'<>]*', resp.text)
+                  if m: magnet = m.group(0)
+                  else:
+                      h = re.search(r'([a-fA-F0-9]{40})', resp.text)
+                      if h: magnet = f'magnet:?xt=urn:btih:{h.group(1)}'
+              
+              if not magnet:
                   print('❌ مگنت پیدا نشد')
                   sys.exit(1)
-
-              print(f'🧲 اضافه کردن به Transmission...')
-              # اضافه کردن torrent با transmission-remote
-              subprocess.run(['transmission-remote', '-a', magnet_link], check=False)
-              time.sleep(5)
-
-              # منتظر دریافت metadata
-              print('⏳ منتظر metadata...')
-              for _ in range(60):
-                  res = subprocess.check_output(['transmission-remote', '-l'], text=True).strip()
-                  if 'magnet' not in res and 'Idle' not in res:
-                      break
-                  time.sleep(5)
-
-              # انتظار برای اتمام دانلود
-              print('📥 دانلود در حال پیشرفت...')
-              while True:
-                  res = subprocess.check_output(['transmission-remote', '-l'], text=True).strip()
-                  # Transmission output: ID Done Have ETA Up Down Ratio Status Name
-                  lines = res.split('\n')
-                  if len(lines) < 2:
-                      break
-                  for line in lines[1:]:
-                      parts = line.split()
-                      if len(parts) < 9:
-                          continue
-                      done = parts[1]
-                      status = parts[-2] if len(parts) > 8 else ''
-                      name = ' '.join(parts[8:])
-                      if '100%' in done:
-                          print(f'\n✅ دانلود کامل شد: {name}')
-                          break
+              
+              print(f'🧲 {magnet[:60]}...')
+              ih = re.search(r'btih:([a-fA-F0-9]{40})', magnet).group(1).lower()
+              
+              # دانلود فایل تورنت
+              turl = f'https://itorrents.org/torrent/{ih}.torrent'
+              tpath = Path(f'/tmp/{ih}.torrent')
+              subprocess.run(['curl', '-L', '-o', str(tpath), turl], check=False)
+              
+              if not tpath.exists() or tpath.stat().st_size < 100:
+                  print('❌ فایل تورنت پیدا نشد')
+                  sys.exit(1)
+              
+              # آنالیز فایل تورنت
+              import bencodepy
+              with open(tpath, 'rb') as f:
+                  data = bencodepy.decode(f.read())
+              
+              info = data[b'info']
+              files = info.get(b'files', [info])
+              if b'files' not in info:
+                  files = [info]
+              
+              out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
+              out_dir.mkdir(parents=True, exist_ok=True)
+              
+              # چک کردن web seeds
+              web_seeds = data.get(b'url-list', [])
+              if not isinstance(web_seeds, list):
+                  web_seeds = [web_seeds]
+              
+              downloaded = 0
+              for f_entry in files[:max_items]:
+                  if b'files' in info:
+                      name = '/'.join([x.decode() for x in f_entry[b'path']])
                   else:
-                      # نمایش پیشرفت
-                      for line in lines[1:]:
-                          parts = line.split()
-                          if len(parts) >= 4:
-                              print(f'\r📊 {parts[1]} done | ↓ {parts[5]} | ↑ {parts[6]}', end='')
-                      time.sleep(5)
-                      continue
-                  break
-
-              # خاموش کردن torque (اختیاری)
-              subprocess.run(['transmission-remote', '--exit'], check=False)
-              time.sleep(2)
-
-              # انتقال فایل‌ها از پوشه دانلود پیش‌فرض (توی تنظیمات گذاشتیم /tmp/dl)
-              download_dir = Path('/tmp/dl')
-              if download_dir.exists():
-                  out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
-                  out_dir.mkdir(parents=True, exist_ok=True)
+                      name = info[b'name'].decode()
                   
-                  video_exts = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'm4v', 'ts']
-                  for f in download_dir.iterdir():
-                      if f.is_file():
-                          dest = out_dir / f.name
-                          if any(f.name.lower().endswith(ext) for ext in video_exts) and video_quality != 'best':
-                              dest = out_dir / f'comp_{f.name}'
-                              dest = compress_video(str(f), str(dest), video_quality)
-                          else:
-                              shutil.move(str(f), str(dest))
+                  local_name = name.split('/')[-1]
+                  fpath = out_dir / local_name
+                  
+                  # اگه web seed باشه، مستقیم دانلود
+                  if web_seeds:
+                      for ws in web_seeds:
+                          if isinstance(ws, bytes):
+                              ws = ws.decode()
+                          durl = ws.rstrip('/') + '/' + name.replace(' ', '%20')
+                          print(f'📥 Web Seed: {local_name}')
+                          ret = subprocess.run(['curl', '-L', '--retry', '3', '-A', 'Mozilla/5.0', '-o', str(fpath), durl], check=False)
+                          if ret.returncode == 0 and fpath.exists() and fpath.stat().st_size > 0:
+                              print(f'   ✅ {fpath.stat().st_size/1e6:.1f}MB')
+                              downloaded += 1
+                              break
+                  else:
+                      # با aria2c
+                      print(f'📥 aria2: {local_name}')
+                      # ساخت یه تورنت تک فایلی
+                      # (ساده‌سازی کردم - فقط خود فایل رو با hash چک نمی‌کنیم)
+                      subprocess.run(['aria2c', '--seed-time=0', '-d', str(out_dir), str(tpath)], check=False)
+              
+              if downloaded == 0:
+                  print('😞 هیچی دانلود نشد. تورنت web seed نداره و aria2 هم نتونست.')
+              else:
+                  # فشرده‌سازی
+                  for f in out_dir.iterdir():
+                      if f.suffix.lower() in ['.mp4','.mkv','.webm','.avi'] and video_quality != 'best':
+                          tmp = out_dir / f'comp_{f.name}'
+                          subprocess.run(['ffmpeg', '-i', str(f), '-vf', f'scale=-2:{video_quality}', '-c:v', 'libx264', '-crf', '23', '-c:a', 'aac', '-b:a', '128k', '-y', str(tmp)], check=False)
+                          if tmp.exists():
+                              f.unlink()
+                              shutil.move(str(tmp), str(f))
+          PYEOF
+
+      - name: 📤 آپلود
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@github.com"
+          mkdir -p downloads searches
+          git add downloads/ searches/ 2>/dev/null
+          git diff --cached --quiet && exit 0
+          git commit -m "📦 ${QUERY:0:50}" --quiet
+          for i in 1 2 3; do git pull --rebase --quiet && git push --quiet && exit 0; sleep 3; done                         shutil.move(str(f), str(dest))
                           sz = dest.stat().st_size / 1e6
                           print(f'✅ {dest.name} ({sz:.1f}MB)')
                           if split_mb > 0 and sz > split_mb:
