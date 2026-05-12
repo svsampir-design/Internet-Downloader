@@ -28,7 +28,7 @@ on:
 
 env:
   PYTHONUNBUFFERED: '1'
-  SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbxuapQ3OQKFOGxZchcCEdjzgz6IWoBs889IUv2lX6AqnxPUCiNoVveJMhZc5uMPMG3BTw/exec'
+  SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbxX_XOgY9Omy_VPAThJC6IrlWmsC4yy4K2AhWfHGqlV9vO5wH7H_NQwc63iS6W9YZTzGA/exec'
 
 jobs:
   torrent-job:
