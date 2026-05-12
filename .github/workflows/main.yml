@@ -8,10 +8,9 @@ on:
         required: true
         type: choice
         options:
-          - piratebay (تورنت کلاسیک)
-          - torrentclaw (فیلم و بازی جدید)
-          - serpapi (فایل و وب معمولی)
-        default: 'piratebay (تورنت کلاسیک)'
+          - piratebay (تورنت)
+          - web (جستجوی اینترنت)
+        default: 'web (جستجوی اینترنت)'
       query:
         description: '🔍 عبارت جستجو'
         required: true
@@ -50,13 +49,13 @@ jobs:
           MODE: ${{ github.event.inputs.mode }}
           QUERY: ${{ github.event.inputs.query }}
           MAX: ${{ github.event.inputs.max_results }}
-          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
         run: |
           python3 << 'PYEOF'
           import os, re, json, requests, hashlib, sys
           from datetime import datetime
           from pathlib import Path
           from urllib.parse import quote_plus
+          from bs4 import BeautifulSoup
 
           mode = os.environ['MODE']
           query = os.environ['QUERY'].strip()
@@ -65,7 +64,7 @@ jobs:
           results = []
           engine_name = ""
 
-          # ─── ۱. حمله به PirateBay ───
+          # ─── ۱. PirateBay ───
           if 'piratebay' in mode:
               engine_name = "PirateBay (apibay)"
               print(f'🏴‍☠️ جستجو در {engine_name}: {query}')
@@ -93,61 +92,41 @@ jobs:
               except Exception as e:
                   print(f'   ⚠️ خطا: {e}')
 
-          # ─── ۲. حمله به TorrentClaw ───
-          elif 'torrentclaw' in mode:
-              engine_name = "TorrentClaw (Media)"
-              print(f'🦞 جستجو در {engine_name}: {query}')
+          # ─── ۲. جستجوی وب عمومی (DuckDuckGo) ───
+          elif 'web' in mode:
+              engine_name = "DuckDuckGo Web"
+              print(f'🌐 جستجوی وب: {query}')
               try:
-                  # TorrentClaw API رایگان و بدون کلید (مستندات رسمی)
-                  url = f'https://api.torrentclaw.com/v1/search?query={quote_plus(query)}&limit={max_r}'
-                  resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
-                  if resp.status_code == 200:
-                      data = resp.json()
-                      if isinstance(data, list):
-                          for item in data:
-                              name = item.get('title', 'Unknown')
-                              magnet = item.get('magnet', '') or item.get('link', '')
-                              size = item.get('size', 'N/A')
-                              seeders = item.get('seeders', 'N/A')
-                              results.append({
-                                  'title': name[:80],
-                                  'url': magnet,
-                                  'info': f'Seed: {seeders} | Size: {size}',
-                                  'direct': True,
-                                  'ext': 'magnet'
-                              })
-              except Exception as e:
-                  print(f'   ⚠️ خطا: {e}')
-
-          # ─── ۳. جستجوی وب معمولی (SerpAPI) ───
-          elif 'serpapi' in mode:
-              engine_name = "Google (SerpAPI)"
-              api_key = os.environ.get('SERPAPI_KEY', '')
-              if not api_key:
-                  print('❌ کلید SerpAPI تنظیم نشده! لطفا در Secrets مخزن ذخیره کن.')
-                  sys.exit(1)
-              try:
-                  url = 'https://serpapi.com/search'
-                  params = {
-                      'api_key': api_key,
-                      'q': query,
-                      'num': max_r,
-                      'engine': 'google'
+                  headers = {
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                   }
-                  resp = requests.get(url, params=params, timeout=15)
+                  url = 'https://html.duckduckgo.com/html/'
+                  params = {'q': query}
+                  resp = requests.post(url, data=params, headers=headers, timeout=15)
                   if resp.status_code == 200:
-                      data = resp.json()
-                      for r in data.get('organic_results', []):
-                          link = r.get('link', '')
-                          title = r.get('title', 'Unknown')
-                          file_ext = re.search(r'\.(\w{2,4})$', link.split('?')[0])
-                          results.append({
-                              'title': title[:80],
-                              'url': link,
-                              'info': r.get('snippet', '')[:120],
-                              'direct': bool(file_ext),
-                              'ext': file_ext.group(1) if file_ext else ''
-                          })
+                      soup = BeautifulSoup(resp.text, 'html.parser')
+                      items = soup.select('.result')
+                      for item in items[:max_r]:
+                          title_elem = item.select_one('.result__title')
+                          link_elem = item.select_one('.result__url')
+                          snippet_elem = item.select_one('.result__snippet')
+                          if title_elem and link_elem:
+                              title = title_elem.get_text(strip=True)
+                              raw_link = link_elem.get('href', '')
+                              if 'uddg=' in raw_link:
+                                  actual_link = raw_link.split('uddg=')[-1].split('&')[0]
+                                  actual_link = requests.utils.unquote(actual_link)
+                              else:
+                                  actual_link = raw_link
+                              snippet = snippet_elem.get_text(strip=True) if snippet_elem else ''
+                              file_ext = re.search(r'\.(\w{2,4})$', actual_link.split('?')[0])
+                              results.append({
+                                  'title': title[:80],
+                                  'url': actual_link,
+                                  'info': snippet[:120],
+                                  'direct': bool(file_ext),
+                                  'ext': file_ext.group(1) if file_ext else ''
+                              })
               except Exception as e:
                   print(f'   ⚠️ خطا: {e}')
 
