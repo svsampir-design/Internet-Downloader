@@ -50,30 +50,29 @@ jobs:
           print(f'🔍 جستجوی {query} در 1337x...')
           try:
               # وانمود کنیم یه آدم واقعی هستیم! 🎭
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Referer': 'https://duckduckgo.com/',
-    'DNT': '1',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'cross-site',
-    'Cache-Control': 'max-age=0'
-}
+              headers = {
+                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                     'Accept-Language': 'en-US,en;q=0.5',
+                     'Accept-Encoding': 'gzip, deflate, br',
+                     'Referer': 'https://duckduckgo.com/',
+                     'DNT': '1',
+                     'Connection': 'keep-alive',
+                     'Upgrade-Insecure-Requests': '1',
+                     'Sec-Fetch-Dest': 'document',
+                     'Sec-Fetch-Mode': 'navigate',
+                     'Sec-Fetch-Site': 'cross-site',
+                     'Cache-Control': 'max-age=0'
+               }
 
-session = requests.Session()
-session.headers.update(headers)
+               session = requests.Session()
+               session.headers.update(headers)
+               # اول یه سر به صفحه اصلی بزنیم (مثل یه آدم واقعی)
+               session.get('https://1337x.to/', timeout=10)
 
-# اول یه سر به صفحه اصلی بزنیم (مثل یه آدم واقعی)
-session.get('https://1337x.to/', timeout=10)
-
-# حالا جستجو کنیم
-search_url = f'https://1337x.to/search/{quote_plus(query)}/1/'
-resp = session.get(search_url, timeout=15)
+                # حالا جستجو کنیم
+                search_url = f'https://1337x.to/search/{quote_plus(query)}/1/'
+                resp = session.get(search_url, timeout=15)
               
               if resp.status_code == 200:
                   from bs4 import BeautifulSoup
