@@ -48,7 +48,7 @@ jobs:
       - name: 🛠️ نصب
         run: |
           sudo apt-get update -qq 2>/dev/null || true
-          sudo apt-get install -y -qq curl zip python3-pip aria2 ffmpeg 2>/dev/null || true
+          sudo apt-get install -y -qq curl zip python3-pip aria2 2>/dev/null || true
           pip3 install -q requests beautifulsoup4 bencodepy 2>/dev/null
           echo "✅ آماده!"
 
