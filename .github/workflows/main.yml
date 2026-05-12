@@ -1,4 +1,4 @@
-name: 🧲 Torrent Direct
+name: 🧲 Torrent Final
 
 on:
   workflow_dispatch:
@@ -28,7 +28,7 @@ on:
 
 jobs:
   torrent:
-    name: ⚡️ دانلود مستقیم
+    name: ⚡️ دانلود تورنت
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
@@ -43,11 +43,8 @@ jobs:
         run: |
           sudo apt-get update -qq 2>/dev/null || true
           sudo apt-get install -y -qq curl zip python3-pip 2>/dev/null || true
-          # دانلود aria2c از سورس (نسخه جدیدتر)
-          wget -q https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-linux-gnu-64bit.tar.xz
-          tar -xf aria2-1.37.0-linux-gnu-64bit.tar.xz
-          sudo cp aria2-1.37.0-linux-gnu-64bit/aria2c /usr/local/bin/
           pip3 install -q requests beautifulsoup4 2>/dev/null
+          pip3 install python-libtorrent 2>/dev/null || echo "⚠️ libtorrent از pip نصب نشد"
           echo "✅ آماده!"
 
       - name: 🎯 اجرا
@@ -58,7 +55,7 @@ jobs:
           SPLIT_MB: ${{ github.event.inputs.split_mb }}
         run: |
           python3 << 'PYEOF'
-          import os, re, sys, subprocess, shutil
+          import os, re, sys, subprocess, time, shutil
           from pathlib import Path
           from datetime import datetime
           from urllib.parse import quote_plus
@@ -103,7 +100,6 @@ jobs:
           # ===== DOWNLOAD =====
           elif 'download' in mode:
               magnet = query if query.startswith('magnet:') else None
-              
               if not magnet:
                   print(f'🕷️ استخراج از: {query}')
                   try:
@@ -126,81 +122,96 @@ jobs:
               
               print(f'🧲 {magnet[:60]}...')
               
-              out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
-              out_dir.mkdir(parents=True, exist_ok=True)
-              
-              # دانلود با aria2c فقط با DHT
-              print('📥 شروع دانلود (فقط DHT)...')
-              subprocess.run([
-                  'aria2c',
-                  '--bt-enable-lpd=true',          # Local Peer Discovery
-                  '--bt-tracker-connect-timeout=5',
-                  '--bt-tracker-timeout=5',
-                  '--dht-entry-point=dht.transmissionbt.com:6881',
-                  '--dht-file-path=/tmp/dht.dat',
-                  '--enable-dht=true',
-                  '--enable-dht6=false',
-                  '--enable-peer-exchange=true',
-                  '--follow-torrent=mem',
-                  '--max-connection-per-server=16',
-                  '--min-split-size=1M',
-                  '--seed-time=0',
-                  '--split=8',
-                  '--bt-tracker='',                 # بدون tracker
-                  '-d', str(out_dir),
-                  magnet
-              ], check=False)
-              
-              # پردازش فایل‌ها
-              for f in out_dir.iterdir():
-                  if f.is_file():
-                      sz = f.stat().st_size / 1e6
-                      print(f'✅ {f.name} ({sz:.1f}MB)')
+              try:
+                  import libtorrent as lt
+                  
+                  ses = lt.session()
+                  ses.listen_on(6881, 6891)
+                  
+                  # تنظیمات برای سرعت بیشتر
+                  settings = ses.get_settings()
+                  settings['enable_dht'] = True
+                  settings['enable_lsd'] = True
+                  settings['enable_upnp'] = True
+                  settings['enable_natpmp'] = True
+                  settings['connections_limit'] = 200
+                  settings['download_rate_limit'] = 0
+                  settings['upload_rate_limit'] = 0
+                  settings['dht_announce_interval'] = 30
+                  ses.set_settings(settings)
+                  
+                  # روترهای DHT
+                  ses.add_dht_router('router.bittorrent.com', 6881)
+                  ses.add_dht_router('router.utorrent.com', 6881)
+                  ses.add_dht_router('dht.transmissionbt.com', 6881)
+                  
+                  params = lt.parse_magnet_uri(magnet)
+                  params.save_path = '/tmp/dl'
+                  handle = ses.add_torrent(params)
+                  
+                  print('⏳ منتظر متادیتا...')
+                  timeout = 300
+                  while not handle.has_metadata():
+                      time.sleep(2)
+                      timeout -= 2
+                      if timeout <= 0:
+                          print('❌ وقت متادیتا تموم شد')
+                          sys.exit(1)
+                      s = handle.status()
+                      print(f'   Peers: {s.num_peers}', end='\r')
+                  
+                  print(f'\n✅ {handle.name()}')
+                  
+                  out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
+                  out_dir.mkdir(parents=True, exist_ok=True)
+                  
+                  handle.set_sequential_download(True)
+                  
+                  last_progress = -1
+                  while not handle.is_seed():
+                      time.sleep(2)
+                      s = handle.status()
+                      progress = s.progress * 100
+                      if int(progress) != last_progress:
+                          print(f'\r📥 {progress:.1f}% | ↓ {s.download_rate/1024:.0f} KB/s | Peers: {s.num_peers}', end='')
+                          last_progress = int(progress)
+                  
+                  print('\n✅ دانلود کامل شد!')
+                  
+                  # ذخیره فایل
+                  torinfo = handle.get_torrent_info()
+                  for i in range(min(torinfo.files().num_files(), max_items)):
+                      f = torinfo.files().file_at(i)
+                      name = f.path.split('/')[-1]
+                      fpath = out_dir / name
+                      
+                      # خوندن فایل از تورنت
+                      with open(fpath, 'wb') as out_f:
+                          piece_size = torinfo.piece_length()
+                          offset = 0
+                          while offset < f.size:
+                              chunk = min(1024*1024, f.size - offset)
+                              data = handle.read_piece(offset // piece_size)
+                              if data:
+                                  po = offset % piece_size
+                                  if po + chunk <= len(data):
+                                      out_f.write(data[po:po+chunk])
+                              offset += chunk
+                      
+                      sz = fpath.stat().st_size / 1e6
+                      print(f'✅ {name} ({sz:.1f}MB)')
                       
                       if split_mb > 0 and sz > split_mb:
                           print(f'   ✂️ تیکه...')
-                          subprocess.run(['zip', '-j', '-s', f'{split_mb}m', str(f) + '.zip', str(f)])
-                          if list(f.parent.glob(f'{f.stem}.z*')):
-                              f.unlink()
-          PYEOF
-
-      - name: 📤 آپلود
-        run: |
-          git config user.name "bot"
-          git config user.email "bot@github.com"
-          mkdir -p downloads searches
-          git add downloads/ searches/ 2>/dev/null
-          git diff --cached --quiet && exit 0
-          git commit -m "📦 ${QUERY:0:50}" --quiet
-          for i in 1 2 3; do git pull --rebase --quiet && git push --quiet && exit 0; sleep 3; done_size > 0:
-                          size_mb = filepath.stat().st_size / 1e6
-                          print(f'✅ {name} ({size_mb:.1f}MB)')
-                          
-                          # فشرده‌سازی ویدیو اگه خواسته بود
-                          is_video = any(name.lower().endswith(ext) for ext in video_exts)
-                          if is_video and video_quality != 'best':
-                              compressed_path = out_dir / f'compressed_{name}'
-                              filepath = compress_video(filepath, compressed_path, video_quality)
-                              size_mb = filepath.stat().st_size / 1e6
-                              print(f'   📉 بعد از فشرده‌سازی: {size_mb:.1f}MB')
-                          
-                          # تیکه‌تکه کردن
-                          if split_mb > 0 and size_mb > split_mb:
-                              print(f'   ✂️ تیکه‌تکه...')
-                              subprocess.run([
-                                  'zip', '-j', '-s', f'{split_mb}m',
-                                  str(filepath) + '.zip', str(filepath)
-                              ], check=False)
-                              if list(filepath.parent.glob(f'{filepath.stem}.z*')):
-                                  filepath.unlink()
+                          subprocess.run(['zip', '-j', '-s', f'{split_mb}m', str(fpath) + '.zip', str(fpath)])
+                          if list(fpath.parent.glob(f'{fpath.stem}.z*')):
+                              fpath.unlink()
                   
                   ses.remove_torrent(handle)
-                  print('\n🎉 همه چی تموم شد!')
+                  print('🎉 تموم شد!')
                   
               except ImportError:
-                  print('❌ کتابخونه libtorrent نصب نیست. درحال نصب...')
-                  subprocess.run(['pip3', 'install', 'python-libtorrent'], check=False)
-                  print('🔄 لطفاً دوباره اجرا کن.')
+                  print('❌ libtorrent نصب نیست')
                   sys.exit(1)
           PYEOF
 
@@ -212,4 +223,4 @@ jobs:
           git add downloads/ searches/ 2>/dev/null
           git diff --cached --quiet && exit 0
           git commit -m "📦 ${QUERY:0:50}" --quiet
-          for i in 1 2 3; do git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null && exit 0; sleep 3; done
+          for i in 1 2 3; do git pull --rebase --quiet && git push --quiet && exit 0; sleep 3; done
