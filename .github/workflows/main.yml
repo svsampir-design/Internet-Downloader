@@ -1,34 +1,39 @@
-name: 🌐 Super Searcher
+name: 🌐 Omni-Sniffer
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: '🎯 موتور جستجو'
+        description: '🎯 حالت حمله'
         required: true
         type: choice
         options:
-          - web (DuckDuckGo)
-          - torrentz2 (Torrent Search)
-        default: 'torrentz2 (Torrent Search)'
+          - torrent (جستجوی تورنت)
+          - media (شکار و دانلود ویدیو و فایل از صفحه)
+        default: 'media (شکار و دانلود ویدیو و فایل از صفحه)'
       query:
-        description: '🔍 عبارت جستجو'
+        description: '🔍 (جستجو) عبارت | (دانلود) لینک صفحه'
         required: true
         type: string
-      max_results:
-        description: '🔢 حداکثر نتایج'
+      max_items:
+        description: '🔢 حداکثر نتایج/دانلود'
         required: false
         type: number
-        default: 15
+        default: 10
+      split_mb:
+        description: '📦 تیکه کردن > مگابایت (0=نه)'
+        required: false
+        type: number
+        default: 0
 
 env:
   PYTHONUNBUFFERED: '1'
 
 jobs:
-  search:
-    name: ⚡️ جستجوی پیشرفته
+  omni-job:
+    name: ⚡️ Omni Job
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 120
     permissions:
       contents: write
     
@@ -38,162 +43,217 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
-      - name: 🛠️ نصب ابزارها
+      - name: 🛠️ نصب مهمات
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq python3-pip
-          pip3 install -q requests beautifulsoup4
+          sudo apt-get install -y -qq aria2 zip curl python3-pip
+          pip3 install -q requests beautifulsoup4 yt-dlp
 
-      - name: 🔎 اجرای جستجو
+      - name: 🎯 اجرای عملیات
         env:
           MODE: ${{ github.event.inputs.mode }}
           QUERY: ${{ github.event.inputs.query }}
-          MAX: ${{ github.event.inputs.max_results }}
+          MAX: ${{ github.event.inputs.max_items }}
+          SPLIT_MB: ${{ github.event.inputs.split_mb }}
         run: |
           python3 << 'PYEOF'
-          import os, re, json, requests, hashlib, sys
+          import os, re, sys, subprocess, requests, json
           from datetime import datetime
           from pathlib import Path
-          from urllib.parse import quote_plus
+          from urllib.parse import quote_plus, urljoin
           from bs4 import BeautifulSoup
 
           mode = os.environ['MODE']
           query = os.environ['QUERY'].strip()
-          max_r = int(os.environ.get('MAX', 15))
+          max_items = int(os.environ.get('MAX', 10))
+          split_mb = int(os.environ.get('SPLIT_MB', 0))
 
-          results = []
-          engine_name = ""
-          headers = {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.5',
-              'Referer': 'https://www.google.com/',
-              'DNT': '1'
-          }
+          H = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
-          # ─── ۱. جستجوی استاندارد وب ───
-          if 'web' in mode or 'duckduckgo' in mode:
-              engine_name = "DuckDuckGo (Web)"
-              print(f'🌐 جستجوی وب: {query}')
+          # ============================================
+          #   مود ۱: جستجوی تورنت (Torrentz2)
+          # ============================================
+          if 'torrent' in mode:
+              print(f'🧲 جستجوی تورنت برای: {query}')
               try:
-                  # استفاده از نسخه HTML ساده DuckDuckGo
-                  url = 'https://html.duckduckgo.com/html/'
-                  params = {'q': query}
-                  resp = requests.post(url, data=params, headers=headers, timeout=15)
+                  resp = requests.get(f'https://torrentz2.nz/search?q={quote_plus(query)}', headers=H, timeout=15)
                   if resp.status_code == 200:
                       soup = BeautifulSoup(resp.text, 'html.parser')
-                      items = soup.select('.result')
-                      for item in items[:max_r]:
-                          title_elem = item.select_one('.result__title')
-                          link_elem = item.select_one('.result__url')
-                          snippet_elem = item.select_one('.result__snippet')
-                          if title_elem and link_elem:
-                              title = title_elem.get_text(strip=True)
-                              raw_link = link_elem.get('href', '')
-                              if 'uddg=' in raw_link:
-                                  actual_link = raw_link.split('uddg=')[-1].split('&')[0]
-                                  actual_link = requests.utils.unquote(actual_link)
-                              else:
-                                  actual_link = raw_link
-                              snippet = snippet_elem.get_text(strip=True) if snippet_elem else ''
-                              file_ext = re.search(r'\.(\w{2,4})$', actual_link.split('?')[0])
+                      results = []
+                      for item in soup.select('dl dt')[:max_items]:
+                          a = item.select_one('a')
+                          if a:
                               results.append({
-                                  'title': title[:80],
-                                  'url': actual_link,
-                                  'info': snippet[:120],
-                                  'direct': bool(file_ext),
-                                  'ext': file_ext.group(1) if file_ext else ''
+                                  'title': a.get_text(strip=True)[:80],
+                                  'url': 'https://torrentz2.nz' + a.get('href', ''),
+                                  'info': item.select_one('span').get_text(strip=True) if item.select_one('span') else ''
                               })
+                      
+                      if results:
+                          ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+                          qs = re.sub(r'[^\w]', '_', query)[:30]
+                          Path('searches').mkdir(exist_ok=True)
+                          f = Path(f'searches/{qs}_{ts}.md')
+                          md = f'# 🧲 {query}\n\n'
+                          md += '| # | Title | Info | Link |\n|---|-------|------|------|\n'
+                          for i, r in enumerate(results, 1):
+                              md += f'| {i} | {r["title"]} | {r["info"]} | [Link]({r["url"]}) |\n'
+                          f.write_text(md)
+                          print(f'✅ گزارش ذخیره شد: {f}')
+                      else:
+                          print('😞 هیچی پیدا نشد.')
                   else:
-                      print(f'   ⚠️ وضعیت HTTP: {resp.status_code}')
+                      print(f'⚠️ خطای HTTP: {resp.status_code}')
               except Exception as e:
-                  print(f'   ⚠️ خطا: {e}')
+                  print(f'❌ خطا: {e}')
 
-          # ─── ۲. جستجوی تورنت (Torrentz2) ───
-          elif 'torrent' in mode or 'torrentz' in mode:
-              engine_name = "Torrentz2 (Torrents)"
-              print(f'🧲 جستجوی تورنت: {query}')
+          # ============================================
+          #   مود ۲: شکار مدیا و فایل از صفحه
+          # ============================================
+          elif 'media' in mode:
+              url = query
+              if not url.startswith('http'):
+                  url = 'https://' + url
+              
+              print(f'🕷️ بررسی صفحه: {url}')
+              
               try:
-                  # استفاده از torrentz2.nz (موتور جستجوی تورنت)
-                  search_url = f'https://torrentz2.nz/search?q={quote_plus(query)}'
-                  resp = requests.get(search_url, headers=headers, timeout=15)
+                  resp = requests.get(url, headers=H, timeout=15, allow_redirects=True)
+                  if resp.status_code != 200:
+                      print(f'❌ خطای HTTP: {resp.status_code}')
+                      sys.exit(1)
                   
-                  if resp.status_code == 200:
-                      soup = BeautifulSoup(resp.text, 'html.parser')
-                      items = soup.select('dl dt')
-                      for item in items[:max_r]:
-                          link_elem = item.select_one('a')
-                          if link_elem:
-                              title = link_elem.get_text(strip=True)
-                              url = 'https://torrentz2.nz' + link_elem.get('href', '')
-                              # گرفتن اطلاعات بیشتر (سایز، سید و...)
-                              info_span = item.select_one('span')
-                              info = info_span.get_text(strip=True) if info_span else ''
-                              results.append({
-                                  'title': title[:80],
-                                  'url': url,
-                                  'info': info[:120],
-                                  'direct': False,
-                                  'ext': 'torrent'
-                              })
-                  else:
-                      print(f'   ⚠️ وضعیت HTTP: {resp.status_code}')
+                  soup = BeautifulSoup(resp.text, 'html.parser')
+                  base_url = resp.url
+                  download_links = set()
+
+                  # --- شکار ویدیوهای Embedded ---
+                  print('🎬 جستجوی ویدیوهای مخفی...')
+                  
+                  # ۱. تگ <video> و <source>
+                  for tag in soup.find_all(['video', 'source']):
+                      src = tag.get('src', '')
+                      if src and not src.startswith('data:'):
+                          download_links.add(urljoin(base_url, src))
+                  
+                  # ۲. iframe ها (همهشون!)
+                  for iframe in soup.find_all('iframe'):
+                      src = iframe.get('src', '')
+                      if src:
+                          full_src = urljoin(base_url, src)
+                          print(f'   📺 بررسی iframe: {full_src[:100]}...')
+                          try:
+                              # سعی کن وارد iframe بشه و اونجا هم بگرده
+                              iframe_resp = requests.get(full_src, headers=H, timeout=10)
+                              if iframe_resp.status_code == 200:
+                                  iframe_soup = BeautifulSoup(iframe_resp.text, 'html.parser')
+                                  for tag in iframe_soup.find_all(['video', 'source']):
+                                      src2 = tag.get('src', '')
+                                      if src2 and not src2.startswith('data:'):
+                                          download_links.add(urljoin(full_src, src2))
+                                  # شکار لینک mp4/m3u8 از کل متن iframe
+                                  found = re.findall(r'https?://[^\s"\']+\.(?:mp4|webm|mkv|m3u8|ts)[^\s"\']*', iframe_resp.text)
+                                  for f in found:
+                                      download_links.add(f)
+                          except:
+                              pass
+                  
+                  # ۳. لینک‌های مستقیم مدیا در کل صفحه
+                  print('🔗 جستجوی لینک‌های مدیا...')
+                  media_exts = ['mp4', 'webm', 'mkv', 'm3u8', 'mp3', 'm4a', 'avi', 'mov', 'flv', 'wmv']
+                  for tag in soup.find_all(['a', 'link']):
+                      href = tag.get('href', '')
+                      if href:
+                          full_url = urljoin(base_url, href)
+                          if any(full_url.lower().endswith(f'.{ext}') for ext in media_exts):
+                              download_links.add(full_url)
+                  
+                  # ۴. لینک‌های mp4 در متن (regex)
+                  found_in_text = re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mp3)[^\s"\'<>]*', resp.text)
+                  for f in found_in_text:
+                      if len(f) < 500:
+                          download_links.add(f)
+
+                  # --- شکار فایل‌های دیگه ---
+                  print('📁 جستجوی فایل‌های قابل دانلود...')
+                  file_exts = ['zip', 'rar', '7z', 'exe', 'pdf', 'iso', 'torrent', 'apk', 'dmg', 'deb', 'rpm', 'tar.gz', 'tar.xz', 'tar.bz2']
+                  for tag in soup.find_all('a'):
+                      href = tag.get('href', '')
+                      if href:
+                          full_url = urljoin(base_url, href)
+                          if any(full_url.lower().endswith(f'.{ext}') or f'.{ext}?' in full_url.lower() for ext in file_exts):
+                              download_links.add(full_url)
+
+                  download_links = list(download_links)[:max_items]
+                  
+                  if not download_links:
+                      print('😞 هیچ فایل یا ویدیویی پیدا نشد.')
+                      sys.exit(0)
+
+                  print(f'\n🎯 {len(download_links)} آیتم برای دانلود پیدا شد!\n{"="*50}')
+
+                  # --- دانلود همه ---
+                  out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
+                  out_dir.mkdir(parents=True, exist_ok=True)
+                  
+                  for i, link in enumerate(download_links, 1):
+                      print(f'\n📥 [{i}/{len(download_links)}] {link[:100]}...')
+                      filename = link.split('/')[-1].split('?')[0] or f'file_{i}'
+                      filepath = out_dir / filename
+                      
+                      try:
+                          # استفاده از aria2 برای سرعت بالا
+                          subprocess.run([
+                              'aria2c', '-x4', '-s4', '--max-tries=3', '--timeout=60',
+                              '--dir=' + str(out_dir), '--out=' + filename,
+                              '--check-certificate=false', '--allow-overwrite=true', link
+                          ], check=False)
+                          
+                          if filepath.exists() and filepath.stat().st_size > 0:
+                              size = filepath.stat().st_size / 1e6
+                              print(f'   ✅ دانلود شد: {size:.1f}MB')
+                              
+                              # تیکه‌تکه کردن اگه خواسته بود
+                              if split_mb > 0 and size > split_mb:
+                                  print(f'   ✂️ تیکه‌تکه کردن...')
+                                  subprocess.run([
+                                      'zip', '-j', '-s', f'{split_mb}m',
+                                      str(filepath) + '.zip', str(filepath)
+                                  ], check=False)
+                                  filepath.unlink()  # حذف فایل اصلی
+                          else:
+                              print('   ❌ دانلود ناموفق یا فایل خالی')
+                      except Exception as e:
+                          print(f'   ❌ خطا: {e}')
+
+                  print(f'\n{"="*50}')
+                  print(f'✅ همه فایل‌ها در پوشه {out_dir} ذخیره شدند!')
+                  
               except Exception as e:
-                  print(f'   ⚠️ خطا: {e}')
-
-          # ─── ذخیره نتایج ───
-          if not results:
-              print('😞 هیچ نتیجه‌ای پیدا نشد.')
-              sys.exit(0)
-
-          ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-          qs = re.sub(r'[^\w]', '_', query)[:30]
-          search_dir = Path('searches')
-          search_dir.mkdir(exist_ok=True)
-          report_file = search_dir / f'{qs}_{ts}.md'
-
-          md = f'# {engine_name}\n\n'
-          md += f'**Query:** `{query}` | **Results:** {len(results)}\n\n'
-          md += '| # | Title | Info | Link |\n'
-          md += '|---|-------|------|------|\n'
-          for i, r in enumerate(results, 1):
-              title = r['title'].replace('|', '/')
-              info = r.get('info', '').replace('|', '/')
-              md += f'| {i} | {title} | {info} | [Link]({r["url"]}) |\n'
-
-          md += '\n---\n\n## 📝 جزئیات کامل\n\n'
-          for i, r in enumerate(results, 1):
-              md += f'### {i}. {r["title"]}\n\n'
-              md += f'**URL:** {r["url"]}\n\n'
-              if r.get('direct'):
-                  md += f'**⚠️ لینک مستقیم فایل:** بله (.{r.get("ext")})\n\n'
-              md += f'**اطلاعات:** {r.get("info")}\n\n---\n\n'
-
-          report_file.write_text(md)
-          print(f'✅ گزارش نهایی: {report_file}')
+                  print(f'❌ خطا: {e}')
+                  sys.exit(1)
+          
           PYEOF
 
-      - name: 📤 بارگذاری نتایج روی گیت‌هاب
+      - name: 📤 آپلود به گیت‌هاب
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "bot@github.com"
           
           echo "📦 آماده‌سازی برای آپلود..."
-          mkdir -p searches
-          git add searches/
+          mkdir -p downloads searches
+          git add downloads/ searches/
           
           TOTAL=$(git diff --cached --name-only | wc -l)
           if [ "$TOTAL" -eq 0 ]; then
-            echo "😴 چیز جدیدی برای آپلود نیست."
+            echo "😴 چیزی برای آپلود نیست."
             exit 0
           fi
           
           echo "   📊 فایل‌های تغییر کرده: $TOTAL"
           git diff --cached --name-only | while read f; do echo "      📎 $f"; done
           
-          QUERY="${{ github.event.inputs.query }}"
-          MODE="${{ github.event.inputs.mode }}"
-          git commit -m "🔍 جستجو [${MODE}]: ${QUERY:0:50} [skip ci]" --quiet
+          git commit -m "📦 عملیات [${MODE}]: $QUERY [skip ci]" --quiet
           
           for i in 1 2 3 4 5; do
             echo -n "   🚀 تلاش $i..."
@@ -205,5 +265,5 @@ jobs:
             git rebase --abort 2>/dev/null || true
             [ $i -lt 5 ] && sleep $((i*5))
           done
-          echo "💀 آپلود ناموفق - احتمالاً حجم بالا یا قطعی نت"
+          echo "💀 آپلود ناموفق"
           exit 1
