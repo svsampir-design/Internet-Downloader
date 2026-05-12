@@ -1,4 +1,4 @@
-name: 🌐 Omni-Sniffer
+name: 🌐 Omni-Sniffer v2
 
 on:
   workflow_dispatch:
@@ -9,17 +9,31 @@ on:
         type: choice
         options:
           - torrent (جستجوی تورنت)
-          - media (شکار و دانلود ویدیو و فایل از صفحه)
-        default: 'media (شکار و دانلود ویدیو و فایل از صفحه)'
+          - media (شکار ویدیو و فایل + کیفیت)
+        default: 'media (شکار ویدیو و فایل + کیفیت)'
       query:
         description: '🔍 (جستجو) عبارت | (دانلود) لینک صفحه'
         required: true
         type: string
+      video_quality:
+        description: '🎬 حداکثر کیفیت برای ویدیوها'
+        required: false
+        type: choice
+        options:
+          - best (بهترین)
+          - 1080
+          - 720
+          - 480
+          - 360
+          - worst (کمترین)
+        default: '480'
+        # این ورودی فقط در مود media نمایش داده می‌شود
+        # (در YAML نمی‌شود شرطی کرد، همه مودها نشون داده میشه ولی تو کد فقط استفاده میشه)
       max_items:
-        description: '🔢 حداکثر نتایج/دانلود'
+        description: '🔢 حداکثر نتایج یا تعداد ویدیو'
         required: false
         type: number
-        default: 10
+        default: 5
       split_mb:
         description: '📦 تیکه کردن > مگابایت (0=نه)'
         required: false
@@ -31,7 +45,7 @@ env:
 
 jobs:
   omni-job:
-    name: ⚡️ Omni Job
+    name: ⚡️ عملیات ویژه
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -45,8 +59,9 @@ jobs:
 
       - name: 🛠️ نصب مهمات
         run: |
+          echo "📦 نصب curl, zip, python3..."
           sudo apt-get update -qq
-          sudo apt-get install -y -qq aria2 zip curl python3-pip
+          sudo apt-get install -y -qq curl zip python3-pip
           pip3 install -q requests beautifulsoup4 yt-dlp
 
       - name: 🎯 اجرای عملیات
@@ -55,6 +70,7 @@ jobs:
           QUERY: ${{ github.event.inputs.query }}
           MAX: ${{ github.event.inputs.max_items }}
           SPLIT_MB: ${{ github.event.inputs.split_mb }}
+          VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
         run: |
           python3 << 'PYEOF'
           import os, re, sys, subprocess, requests, json
@@ -65,13 +81,25 @@ jobs:
 
           mode = os.environ['MODE']
           query = os.environ['QUERY'].strip()
-          max_items = int(os.environ.get('MAX', 10))
+          max_items = int(os.environ.get('MAX', 5))
           split_mb = int(os.environ.get('SPLIT_MB', 0))
+          video_quality = os.environ.get('VIDEO_QUALITY', '480')
 
           H = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
+          # ترجمه کیفیت به فرمت yt-dlp
+          quality_map = {
+              'best (بهترین)': 'best',
+              '1080': 'best[height<=1080]',
+              '720': 'best[height<=720]',
+              '480': 'best[height<=480]',
+              '360': 'best[height<=360]',
+              'worst (کمترین)': 'worst'
+          }
+          yt_format = quality_map.get(video_quality, 'best[height<=480]')
+
           # ============================================
-          #   مود ۱: جستجوی تورنت (Torrentz2)
+          #   مود ۱: جستجوی تورنت (بدون تغییر)
           # ============================================
           if 'torrent' in mode:
               print(f'🧲 جستجوی تورنت برای: {query}')
@@ -108,7 +136,7 @@ jobs:
                   print(f'❌ خطا: {e}')
 
           # ============================================
-          #   مود ۲: شکار مدیا و فایل از صفحه
+          #   مود ۲: شکار مدیا و فایل (حرفه‌ای با yt-dlp)
           # ============================================
           elif 'media' in mode:
               url = query
@@ -116,132 +144,102 @@ jobs:
                   url = 'https://' + url
               
               print(f'🕷️ بررسی صفحه: {url}')
+              print(f'🎬 کیفیت ویدیو: {video_quality} (فرمت: {yt_format})')
               
+              out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
+              out_dir.mkdir(parents=True, exist_ok=True)
+              downloaded_something = False
+
+              # --- حمله اول: ویدیوها را با yt-dlp شکار کن ---
+              print('\n🎥 شروع شکار ویدیوها با yt-dlp...')
+              try:
+                  # yt-dlp به صورت خودکار ویدیوهای embedded را پیدا و با بهترین کیفیت محدود دانلود می‌کند
+                  cmd = [
+                      'yt-dlp',
+                      '--no-warnings',
+                      '--format', yt_format,
+                      '--output', str(out_dir / '%(title)s.%(ext)s'),
+                      '--merge-output-format', 'mp4',
+                      '--user-agent', H['User-Agent'],
+                      '--max-downloads', str(max_items),
+                      url
+                  ]
+                  print(f'   🚀 اجرا: {" ".join(cmd)}')
+                  result = subprocess.run(cmd, check=False)
+                  if result.returncode == 0:
+                      downloaded_something = True
+                      print('   ✅ ویدیوها با موفقیت دانلود شدند.')
+                  else:
+                      print('   ⚠️ yt-dlp با خطا مواجه شد یا ویدیویی پیدا نکرد.')
+              except Exception as e:
+                  print(f'   ❌ خطا در yt-dlp: {e}')
+
+              # --- حمله دوم: فایل‌های غیر ویدیویی (zip, pdf...) را با curl دانلود کن ---
+              print('\n📁 شکار فایل‌های غیر ویدیویی...')
               try:
                   resp = requests.get(url, headers=H, timeout=15, allow_redirects=True)
-                  if resp.status_code != 200:
-                      print(f'❌ خطای HTTP: {resp.status_code}')
-                      sys.exit(1)
-                  
-                  soup = BeautifulSoup(resp.text, 'html.parser')
-                  base_url = resp.url
-                  download_links = set()
+                  if resp.status_code == 200:
+                      soup = BeautifulSoup(resp.text, 'html.parser')
+                      base_url = resp.url
+                      file_links = set()
 
-                  # --- شکار ویدیوهای Embedded ---
-                  print('🎬 جستجوی ویدیوهای مخفی...')
-                  
-                  # ۱. تگ <video> و <source>
-                  for tag in soup.find_all(['video', 'source']):
-                      src = tag.get('src', '')
-                      if src and not src.startswith('data:'):
-                          download_links.add(urljoin(base_url, src))
-                  
-                  # ۲. iframe ها (همهشون!)
-                  for iframe in soup.find_all('iframe'):
-                      src = iframe.get('src', '')
-                      if src:
-                          full_src = urljoin(base_url, src)
-                          print(f'   📺 بررسی iframe: {full_src[:100]}...')
-                          try:
-                              # سعی کن وارد iframe بشه و اونجا هم بگرده
-                              iframe_resp = requests.get(full_src, headers=H, timeout=10)
-                              if iframe_resp.status_code == 200:
-                                  iframe_soup = BeautifulSoup(iframe_resp.text, 'html.parser')
-                                  for tag in iframe_soup.find_all(['video', 'source']):
-                                      src2 = tag.get('src', '')
-                                      if src2 and not src2.startswith('data:'):
-                                          download_links.add(urljoin(full_src, src2))
-                                  # شکار لینک mp4/m3u8 از کل متن iframe
-                                  found = re.findall(r'https?://[^\s"\']+\.(?:mp4|webm|mkv|m3u8|ts)[^\s"\']*', iframe_resp.text)
-                                  for f in found:
-                                      download_links.add(f)
-                          except:
-                              pass
-                  
-                  # ۳. لینک‌های مستقیم مدیا در کل صفحه
-                  print('🔗 جستجوی لینک‌های مدیا...')
-                  media_exts = ['mp4', 'webm', 'mkv', 'm3u8', 'mp3', 'm4a', 'avi', 'mov', 'flv', 'wmv']
-                  for tag in soup.find_all(['a', 'link']):
-                      href = tag.get('href', '')
-                      if href:
-                          full_url = urljoin(base_url, href)
-                          if any(full_url.lower().endswith(f'.{ext}') for ext in media_exts):
-                              download_links.add(full_url)
-                  
-                  # ۴. لینک‌های mp4 در متن (regex)
-                  found_in_text = re.findall(r'https?://[^\s"\'<>]+\.(?:mp4|webm|mkv|m3u8|mp3)[^\s"\'<>]*', resp.text)
-                  for f in found_in_text:
-                      if len(f) < 500:
-                          download_links.add(f)
+                      # همه تگ‌های a با لینک به فایل‌های مشخص
+                      file_exts = ['zip', 'rar', '7z', 'exe', 'pdf', 'iso', 'torrent', 'apk', 'dmg', 'deb', 'rpm', 'tar.gz', 'tar.xz', 'tar.bz2']
+                      for tag in soup.find_all('a'):
+                          href = tag.get('href', '')
+                          if href:
+                              full_url = urljoin(base_url, href)
+                              if any(full_url.lower().endswith(f'.{ext}') or f'.{ext}?' in full_url.lower() for ext in file_exts):
+                                  file_links.add(full_url)
 
-                  # --- شکار فایل‌های دیگه ---
-                  print('📁 جستجوی فایل‌های قابل دانلود...')
-                  file_exts = ['zip', 'rar', '7z', 'exe', 'pdf', 'iso', 'torrent', 'apk', 'dmg', 'deb', 'rpm', 'tar.gz', 'tar.xz', 'tar.bz2']
-                  for tag in soup.find_all('a'):
-                      href = tag.get('href', '')
-                      if href:
-                          full_url = urljoin(base_url, href)
-                          if any(full_url.lower().endswith(f'.{ext}') or f'.{ext}?' in full_url.lower() for ext in file_exts):
-                              download_links.add(full_url)
-
-                  download_links = list(download_links)[:max_items]
-                  
-                  if not download_links:
-                      print('😞 هیچ فایل یا ویدیویی پیدا نشد.')
-                      sys.exit(0)
-
-                  print(f'\n🎯 {len(download_links)} آیتم برای دانلود پیدا شد!\n{"="*50}')
-
-                  # --- دانلود همه ---
-                  out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
-                  out_dir.mkdir(parents=True, exist_ok=True)
-                  
-                  for i, link in enumerate(download_links, 1):
-                      print(f'\n📥 [{i}/{len(download_links)}] {link[:100]}...')
-                      filename = link.split('/')[-1].split('?')[0] or f'file_{i}'
-                      filepath = out_dir / filename
-                      
-                      try:
-                          # استفاده از aria2 برای سرعت بالا
-                          subprocess.run([
-                              'aria2c', '-x4', '-s4', '--max-tries=3', '--timeout=60',
-                              '--dir=' + str(out_dir), '--out=' + filename,
-                              '--check-certificate=false', '--allow-overwrite=true', link
-                          ], check=False)
-                          
-                          if filepath.exists() and filepath.stat().st_size > 0:
-                              size = filepath.stat().st_size / 1e6
-                              print(f'   ✅ دانلود شد: {size:.1f}MB')
-                              
-                              # تیکه‌تکه کردن اگه خواسته بود
-                              if split_mb > 0 and size > split_mb:
-                                  print(f'   ✂️ تیکه‌تکه کردن...')
-                                  subprocess.run([
-                                      'zip', '-j', '-s', f'{split_mb}m',
-                                      str(filepath) + '.zip', str(filepath)
-                                  ], check=False)
-                                  filepath.unlink()  # حذف فایل اصلی
-                          else:
-                              print('   ❌ دانلود ناموفق یا فایل خالی')
-                      except Exception as e:
-                          print(f'   ❌ خطا: {e}')
-
-                  print(f'\n{"="*50}')
-                  print(f'✅ همه فایل‌ها در پوشه {out_dir} ذخیره شدند!')
-                  
+                      file_links = list(file_links)[:max_items]
+                      if file_links:
+                          print(f'   🎯 {len(file_links)} فایل غیر ویدیویی پیدا شد.')
+                          for i, link in enumerate(file_links, 1):
+                              filename = link.split('/')[-1].split('?')[0] or f'file_{i}'
+                              filepath = out_dir / filename
+                              print(f'   📥 [{i}/{len(file_links)}] {filename}')
+                              # curl با دنبال کردن ریدایرکت
+                              ret = subprocess.run([
+                                  'curl', '-L', '--retry', '3', '--connect-timeout', '30',
+                                  '-A', H['User-Agent'], '-o', str(filepath), link
+                              ], check=False)
+                              if ret.returncode == 0 and filepath.exists() and filepath.stat().st_size > 0:
+                                  size_mb = filepath.stat().st_size / 1e6
+                                  print(f'      ✅ دانلود شد ({size_mb:.1f}MB)')
+                                  downloaded_something = True
+                                  # تیکه تیکه کردن در صورت نیاز
+                                  if split_mb > 0 and size_mb > split_mb:
+                                      print(f'      ✂️ تیکه‌تکه کردن...')
+                                      subprocess.run([
+                                          'zip', '-j', '-s', f'{split_mb}m',
+                                          str(filepath) + '.zip', str(filepath)
+                                      ], check=False)
+                                      filepath.unlink()  # پاک کردن اصلی
+                              else:
+                                  print(f'      ❌ دانلود ناموفق')
+                      else:
+                          print('   ℹ️ هیچ فایل غیر ویدیویی پیدا نشد.')
+                  else:
+                      print(f'   ⚠️ خطای HTTP: {resp.status_code}')
               except Exception as e:
-                  print(f'❌ خطا: {e}')
-                  sys.exit(1)
-          
+                  print(f'   ❌ خطا در جستجوی فایل‌ها: {e}')
+
+              if not downloaded_something:
+                  print('\n💀 هیچ چیزی دانلود نشد. احتمالاً صفحه امنیتی داره یا محتواش مخفی‌تر از این حرفاست.')
+              else:
+                  print(f'\n✅ همه آیتم‌های دانلود شده در پوشه {out_dir} ذخیره شدند!')
+
           PYEOF
 
-      - name: 📤 آپلود به گیت‌هاب
+      - name: 📤 آپلود نهایی
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "bot@github.com"
           
           echo "📦 آماده‌سازی برای آپلود..."
           mkdir -p downloads searches
+          # یه پوشه موقت برای فایل‌های تیکه‌شده و غیره
           git add downloads/ searches/
           
           TOTAL=$(git diff --cached --name-only | wc -l)
@@ -265,5 +263,5 @@ jobs:
             git rebase --abort 2>/dev/null || true
             [ $i -lt 5 ] && sleep $((i*5))
           done
-          echo "💀 آپلود ناموفق"
+          echo "💀 آپلود ناموفق - حجم زیاد یا قطعی نت"
           exit 1
