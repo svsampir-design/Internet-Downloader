@@ -21,7 +21,7 @@ on:
         type: number
         default: 3
       video_quality:
-        description: '🎬 حداکثر کیفیت ویدیو (best = بدون تغییر)'
+        description: '🎬 حداکثر کیفیت (best=بدون تغییر)'
         required: false
         type: choice
         options: [best, 1080, 720, 480, 360]
@@ -37,7 +37,7 @@ env:
 
 jobs:
   torrent-job:
-    name: ⚡️ تورنت حرفه‌ای
+    name: ⚡️ دانلود تورنت با Transmission
     runs-on: ubuntu-latest
     timeout-minutes: 360
     permissions:
@@ -51,10 +51,15 @@ jobs:
       - name: 🛠️ نصب ابزارها
         run: |
           sudo apt-get update -qq 2>/dev/null || true
-          sudo apt-get install -y -qq curl zip python3-pip ffmpeg 2>/dev/null || true
+          sudo apt-get install -y -qq curl zip python3-pip ffmpeg transmission-daemon transmission-cli 2>/dev/null || true
           pip3 install -q requests beautifulsoup4 2>/dev/null
-          pip3 install python-libtorrent 2>/dev/null || true
-          echo "✅ آماده!"
+          # پیکربندی اولیه transmission
+          sudo systemctl stop transmission-daemon 2>/dev/null || true
+          mkdir -p ~/.config/transmission-daemon
+          echo '{"download-dir": "/tmp/dl", "incomplete-dir": "/tmp/incomplete", "rpc-whitelist": "127.0.0.1", "rpc-whitelist-enabled": false, "dht-enabled": true, "lds-enabled": true, "pex-enabled": true, "utp-enabled": true}' > ~/.config/transmission-daemon/settings.json
+          transmission-daemon -g ~/.config/transmission-daemon
+          sleep 2
+          echo "✅ Transmission آماده است!"
 
       - name: 🎯 اجرا
         env:
@@ -65,7 +70,7 @@ jobs:
           VIDEO_QUALITY: ${{ github.event.inputs.video_quality }}
         run: |
           python3 << 'PYEOF'
-          import os, re, sys, subprocess, time
+          import os, re, sys, subprocess, time, shutil
           from pathlib import Path
           from datetime import datetime
           from urllib.parse import quote_plus
@@ -80,39 +85,32 @@ jobs:
 
           H = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
-          def format_size(size_bytes):
-              if size_bytes >= 1e9:
-                  return f'{size_bytes/1e9:.2f} GB'
-              elif size_bytes >= 1e6:
-                  return f'{size_bytes/1e6:.1f} MB'
-              elif size_bytes >= 1e3:
-                  return f'{size_bytes/1e3:.1f} KB'
-              else:
-                  return f'{size_bytes} B'
+          def format_size(sz):
+              for unit in ['B','KB','MB','GB']:
+                  if sz < 1024.0:
+                      return f"{sz:.1f} {unit}"
+                  sz /= 1024.0
+              return f"{sz:.1f} TB"
 
-          def compress_video(input_path, output_path, target_height):
-              """فشرده‌سازی ویدیو به کیفیت پایین‌تر"""
-              if target_height == 'best':
-                  return input_path
-              
-              print(f'   🔄 فشرده‌سازی به حداکثر {target_height}p...')
-              cmd = [
-                  'ffmpeg', '-i', str(input_path),
-                  '-vf', f'scale=-2:{target_height}',
+          def compress_video(inp, outp, quality):
+              if quality == 'best':
+                  shutil.move(inp, outp)
+                  return outp
+              print(f'   🔄 فشرده‌سازی به {quality}p...')
+              subprocess.run([
+                  'ffmpeg', '-i', inp,
+                  '-vf', f'scale=-2:{quality}',
                   '-c:v', 'libx264', '-crf', '23',
                   '-c:a', 'aac', '-b:a', '128k',
                   '-movflags', '+faststart',
-                  '-y', str(output_path)
-              ]
-              subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-              if output_path.exists() and output_path.stat().st_size > 0:
-                  os.remove(input_path)
-                  return output_path
-              return input_path
+                  '-y', outp
+              ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+              if os.path.exists(outp) and os.path.getsize(outp) > 0:
+                  os.remove(inp)
+                  return outp
+              return inp
 
-          # =================================================================
-          # ۱. جستجوی تورنت (با حجم!)
-          # =================================================================
+          # ====== MODE: SEARCH ======
           if mode == 'search (جستجوی تورنت)':
               print(f'🧲 جستجو: {query}')
               resp = requests.get(f'https://torrentz2.nz/search?q={quote_plus(query)}', headers=H, timeout=15)
@@ -121,23 +119,15 @@ jobs:
                   results = []
                   for item in soup.select('dl dt')[:max_items]:
                       a = item.select_one('a')
-                      info_span = item.select_one('span')
+                      info = item.select_one('span')
                       if a:
                           title = a.get_text(strip=True)[:80]
                           url = 'https://torrentz2.nz' + a.get('href', '')
-                          info = info_span.get_text(strip=True) if info_span else ''
-                          
-                          # استخراج حجم از info (معمولاً مثل "1.36 GB" یا "850 MB")
-                          size_match = re.search(r'([\d.]+)\s*(GB|MB|KB)', info, re.IGNORECASE)
-                          size_str = f'{size_match.group(1)} {size_match.group(2).upper()}' if size_match else 'نامشخص'
-                          
-                          results.append({
-                              'title': title,
-                              'url': url,
-                              'info': info,
-                              'size': size_str
-                          })
-                  
+                          infotxt = info.get_text(strip=True) if info else ''
+                          # استخراج حجم
+                          s_m = re.search(r'([\d.]+)\s*(GB|MB|KB)', infotxt, re.I)
+                          sz = f'{s_m.group(1)} {s_m.group(2).upper()}' if s_m else 'نامشخص'
+                          results.append({'title': title, 'url': url, 'info': infotxt, 'size': sz})
                   if results:
                       ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
                       qs = re.sub(r'[^\w]', '_', query)[:30]
@@ -153,12 +143,9 @@ jobs:
               else:
                   print(f'⚠️ {resp.status_code}')
 
-          # =================================================================
-          #  ۲. دانلود تورنت (با DHT, LSD و فشرده‌سازی)
-          # =================================================================
+          # ====== MODE: DOWNLOAD ======
           elif mode == 'download (دانلود تورنت)':
               magnet_link = query if query.startswith('magnet:') else None
-              
               if not magnet_link:
                   print(f'🕷️ استخراج مگنت از: {query}')
                   try:
@@ -173,69 +160,96 @@ jobs:
                               if found:
                                   magnet_link = found[0]
                           if not magnet_link:
-                              hash_match = re.search(r'([a-fA-F0-9]{40})', resp.text)
-                              if hash_match:
-                                  magnet_link = f'magnet:?xt=urn:btih:{hash_match.group(1)}'
+                              h = re.search(r'([a-fA-F0-9]{40})', resp.text)
+                              if h:
+                                  magnet_link = f'magnet:?xt=urn:btih:{h.group(1)}'
                   except Exception as e:
                       print(f'❌ {e}')
                       sys.exit(1)
-              
               if not magnet_link:
-                  print('❌ لینک مگنت پیدا نشد')
+                  print('❌ مگنت پیدا نشد')
                   sys.exit(1)
-              
-              print(f'🧲 {magnet_link[:60]}...')
-              
-              try:
-                  import libtorrent as lt
-                  
-                  ses = lt.session()
-                  ses.listen_on(6881, 6891)
-                  
-                  # فعال کردن DHT و LSD برای سرعت بیشتر
-                  settings = ses.get_settings()
-                  settings['enable_dht'] = True
-                  settings['enable_lsd'] = True
-                  settings['enable_upnp'] = True
-                  settings['enable_natpmp'] = True
-                  settings['connections_limit'] = 200
-                  settings['download_rate_limit'] = 0  # بدون محدودیت
-                  settings['upload_rate_limit'] = 0     # بدون محدودیت
-                  ses.set_settings(settings)
-                  
-                  # اضافه کردن روترهای DHT
-                  ses.add_dht_router('router.bittorrent.com', 6881)
-                  ses.add_dht_router('router.utorrent.com', 6881)
-                  ses.add_dht_router('dht.transmissionbt.com', 6881)
-                  
-                  params = lt.parse_magnet_uri(magnet_link)
-                  params.save_path = '/tmp/dl_torrent'
-                  handle = ses.add_torrent(params)
-                  
-                  print('⏳ اتصال به تورنت...')
-                  timeout = 300  # ۵ دقیقه صبر برای متادیتا
-                  while not handle.has_metadata():
-                      time.sleep(2)
-                      timeout -= 2
-                      if timeout <= 0:
-                          print('❌ وقت تموم شد!')
-                          sys.exit(1)
-                      s = handle.status()
-                      print(f'   Peers: {s.num_peers} | Seeds: {s.num_seeds} | DHT: {s.dht_nodes}', end='\r')
-                  
-                  print('\n✅ متادیتا دریافت شد. شروع دانلود...')
-                  
+
+              print(f'🧲 اضافه کردن به Transmission...')
+              # اضافه کردن torrent با transmission-remote
+              subprocess.run(['transmission-remote', '-a', magnet_link], check=False)
+              time.sleep(5)
+
+              # منتظر دریافت metadata
+              print('⏳ منتظر metadata...')
+              for _ in range(60):
+                  res = subprocess.check_output(['transmission-remote', '-l'], text=True).strip()
+                  if 'magnet' not in res and 'Idle' not in res:
+                      break
+                  time.sleep(5)
+
+              # انتظار برای اتمام دانلود
+              print('📥 دانلود در حال پیشرفت...')
+              while True:
+                  res = subprocess.check_output(['transmission-remote', '-l'], text=True).strip()
+                  # Transmission output: ID Done Have ETA Up Down Ratio Status Name
+                  lines = res.split('\n')
+                  if len(lines) < 2:
+                      break
+                  for line in lines[1:]:
+                      parts = line.split()
+                      if len(parts) < 9:
+                          continue
+                      done = parts[1]
+                      status = parts[-2] if len(parts) > 8 else ''
+                      name = ' '.join(parts[8:])
+                      if '100%' in done:
+                          print(f'\n✅ دانلود کامل شد: {name}')
+                          break
+                  else:
+                      # نمایش پیشرفت
+                      for line in lines[1:]:
+                          parts = line.split()
+                          if len(parts) >= 4:
+                              print(f'\r📊 {parts[1]} done | ↓ {parts[5]} | ↑ {parts[6]}', end='')
+                      time.sleep(5)
+                      continue
+                  break
+
+              # خاموش کردن torque (اختیاری)
+              subprocess.run(['transmission-remote', '--exit'], check=False)
+              time.sleep(2)
+
+              # انتقال فایل‌ها از پوشه دانلود پیش‌فرض (توی تنظیمات گذاشتیم /tmp/dl)
+              download_dir = Path('/tmp/dl')
+              if download_dir.exists():
                   out_dir = Path('downloads') / datetime.now().strftime('%Y%m%d_%H%M%S')
                   out_dir.mkdir(parents=True, exist_ok=True)
                   
-                  handle.set_sequential_download(True)
-                  
-                  last_progress = -1
-                  while not handle.is_seed():
-                      time.sleep(2)
-                      s = handle.status()
-                      progress = s.progress * 100
-                      if int(progress) != last_progress:
+                  video_exts = ['mp4', 'mkv', 'webm', 'avi', 'mov', 'm4v', 'ts']
+                  for f in download_dir.iterdir():
+                      if f.is_file():
+                          dest = out_dir / f.name
+                          if any(f.name.lower().endswith(ext) for ext in video_exts) and video_quality != 'best':
+                              dest = out_dir / f'comp_{f.name}'
+                              dest = compress_video(str(f), str(dest), video_quality)
+                          else:
+                              shutil.move(str(f), str(dest))
+                          sz = dest.stat().st_size / 1e6
+                          print(f'✅ {dest.name} ({sz:.1f}MB)')
+                          if split_mb > 0 and sz > split_mb:
+                              print(f'   ✂️ تکه‌تکه...')
+                              subprocess.run(['zip', '-j', '-s', f'{split_mb}m', str(dest) + '.zip', str(dest)])
+                              if list(dest.parent.glob(f'{dest.stem}.z*')):
+                                  dest.unlink()
+              else:
+                  print('❌ پوشه دانلود خالی است!')
+          PYEOF
+
+      - name: 📤 آپلود نهایی
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@github.com"
+          mkdir -p downloads searches
+          git add downloads/ searches/ 2>/dev/null
+          git diff --cached --quiet && exit 0
+          git commit -m "📦 ${QUERY:0:50}" --quiet
+          for i in 1 2 3; do git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null && exit 0; sleep 3; done             if int(progress) != last_progress:
                           print(f'\r📥 {progress:.1f}% | ↓ {s.download_rate/1024:.0f} KB/s | ↑ {s.upload_rate/1024:.0f} KB/s | Peers: {s.num_peers}', end='')
                           last_progress = int(progress)
                   
