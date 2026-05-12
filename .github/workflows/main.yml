@@ -1,24 +1,32 @@
-name: 🧲 Direct Torrent Searcher
+name: 🌐 Super Searcher
 
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: '🎯 موتور جستجو'
+        required: true
+        type: choice
+        options:
+          - web (DuckDuckGo)
+          - torrentz2 (Torrent Search)
+        default: 'torrentz2 (Torrent Search)'
       query:
-        description: 'نام دقیق (مثلاً The Pitt S02)'
+        description: '🔍 عبارت جستجو'
         required: true
         type: string
       max_results:
-        description: 'حداکثر نتایج'
+        description: '🔢 حداکثر نتایج'
         required: false
         type: number
-        default: 10
+        default: 15
 
 env:
   PYTHONUNBUFFERED: '1'
 
 jobs:
   search:
-    name: 🎯 شکار لینک مستقیم
+    name: ⚡️ جستجوی پیشرفته
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -30,137 +38,172 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
 
-      - name: ⚡️ نصب و جستجو
+      - name: 🛠️ نصب ابزارها
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-pip
+          pip3 install -q requests beautifulsoup4
+
+      - name: 🔎 اجرای جستجو
         env:
+          MODE: ${{ github.event.inputs.mode }}
           QUERY: ${{ github.event.inputs.query }}
           MAX: ${{ github.event.inputs.max_results }}
         run: |
-          pip3 install -q requests beautifulsoup4 2>/dev/null
           python3 << 'PYEOF'
-          import os, re, json, requests
+          import os, re, json, requests, hashlib, sys
           from datetime import datetime
           from pathlib import Path
           from urllib.parse import quote_plus
+          from bs4 import BeautifulSoup
 
+          mode = os.environ['MODE']
           query = os.environ['QUERY'].strip()
-          max_r = int(os.environ.get('MAX', 10))
+          max_r = int(os.environ.get('MAX', 15))
+
           results = []
+          engine_name = ""
+          headers = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+              'Accept-Language': 'en-US,en;q=0.5',
+              'Referer': 'https://www.google.com/',
+              'DNT': '1'
+          }
 
-          # روش پیشرفته: جستجوی 1337x (مطمئن‌ترین منبع آنلاین)
-          print(f'🔍 جستجوی {query} در 1337x...')
-          try:
-              # وانمود کنیم یه آدم واقعی هستیم! 🎭
-              headers = {
-                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                     'Accept-Language': 'en-US,en;q=0.5',
-                     'Accept-Encoding': 'gzip, deflate, br',
-                     'Referer': 'https://duckduckgo.com/',
-                     'DNT': '1',
-                     'Connection': 'keep-alive',
-                     'Upgrade-Insecure-Requests': '1',
-                     'Sec-Fetch-Dest': 'document',
-                     'Sec-Fetch-Mode': 'navigate',
-                     'Sec-Fetch-Site': 'cross-site',
-                     'Cache-Control': 'max-age=0'
-               }
+          # ─── ۱. جستجوی استاندارد وب ───
+          if 'web' in mode or 'duckduckgo' in mode:
+              engine_name = "DuckDuckGo (Web)"
+              print(f'🌐 جستجوی وب: {query}')
+              try:
+                  # استفاده از نسخه HTML ساده DuckDuckGo
+                  url = 'https://html.duckduckgo.com/html/'
+                  params = {'q': query}
+                  resp = requests.post(url, data=params, headers=headers, timeout=15)
+                  if resp.status_code == 200:
+                      soup = BeautifulSoup(resp.text, 'html.parser')
+                      items = soup.select('.result')
+                      for item in items[:max_r]:
+                          title_elem = item.select_one('.result__title')
+                          link_elem = item.select_one('.result__url')
+                          snippet_elem = item.select_one('.result__snippet')
+                          if title_elem and link_elem:
+                              title = title_elem.get_text(strip=True)
+                              raw_link = link_elem.get('href', '')
+                              if 'uddg=' in raw_link:
+                                  actual_link = raw_link.split('uddg=')[-1].split('&')[0]
+                                  actual_link = requests.utils.unquote(actual_link)
+                              else:
+                                  actual_link = raw_link
+                              snippet = snippet_elem.get_text(strip=True) if snippet_elem else ''
+                              file_ext = re.search(r'\.(\w{2,4})$', actual_link.split('?')[0])
+                              results.append({
+                                  'title': title[:80],
+                                  'url': actual_link,
+                                  'info': snippet[:120],
+                                  'direct': bool(file_ext),
+                                  'ext': file_ext.group(1) if file_ext else ''
+                              })
+                  else:
+                      print(f'   ⚠️ وضعیت HTTP: {resp.status_code}')
+              except Exception as e:
+                  print(f'   ⚠️ خطا: {e}')
 
-               session = requests.Session()
-               session.headers.update(headers)
-               # اول یه سر به صفحه اصلی بزنیم (مثل یه آدم واقعی)
-               session.get('https://1337x.to/', timeout=10)
-
-                # حالا جستجو کنیم
-                search_url = f'https://1337x.to/search/{quote_plus(query)}/1/'
-                resp = session.get(search_url, timeout=15)
-              
-              if resp.status_code == 200:
-                  from bs4 import BeautifulSoup
-                  soup = BeautifulSoup(resp.text, 'html.parser')
-                  rows = soup.select('table.table-list tbody tr')
+          # ─── ۲. جستجوی تورنت (Torrentz2) ───
+          elif 'torrent' in mode or 'torrentz' in mode:
+              engine_name = "Torrentz2 (Torrents)"
+              print(f'🧲 جستجوی تورنت: {query}')
+              try:
+                  # استفاده از torrentz2.nz (موتور جستجوی تورنت)
+                  search_url = f'https://torrentz2.nz/search?q={quote_plus(query)}'
+                  resp = requests.get(search_url, headers=headers, timeout=15)
                   
-                  for row in rows[:max_r]:
-                      name_col = row.select_one('td.name a:nth-of-type(2)')
-                      if name_col:
-                          name = name_col.get_text(strip=True)
-                          link = 'https://1337x.to' + name_col.get('href', '')
-                          
-                          # سعی کن اطلاعات بیشتر بگیری
-                          seeds = row.select_one('td.seeds')
-                          leeches = row.select_one('td.leeches')
-                          size = row.select_one('td.size')
-                          
-                          seeds = seeds.get_text(strip=True) if seeds else '0'
-                          leeches = leeches.get_text(strip=True) if leeches else '0'
-                          size = size.get_text(strip=True) if size else 'N/A'
-                          
-                          results.append({
-                              'title': name[:80],
-                              'url': link,
-                              'info': f'Seed: {seeds} | Leech: {leeches} | Size: {size}'
-                          })
-              else:
-                  print(f'   ⚠️ وضعیت: {resp.status_code}')
-          except Exception as e:
-              print(f'   ❌ خطا: {e}')
+                  if resp.status_code == 200:
+                      soup = BeautifulSoup(resp.text, 'html.parser')
+                      items = soup.select('dl dt')
+                      for item in items[:max_r]:
+                          link_elem = item.select_one('a')
+                          if link_elem:
+                              title = link_elem.get_text(strip=True)
+                              url = 'https://torrentz2.nz' + link_elem.get('href', '')
+                              # گرفتن اطلاعات بیشتر (سایز، سید و...)
+                              info_span = item.select_one('span')
+                              info = info_span.get_text(strip=True) if info_span else ''
+                              results.append({
+                                  'title': title[:80],
+                                  'url': url,
+                                  'info': info[:120],
+                                  'direct': False,
+                                  'ext': 'torrent'
+                              })
+                  else:
+                      print(f'   ⚠️ وضعیت HTTP: {resp.status_code}')
+              except Exception as e:
+                  print(f'   ⚠️ خطا: {e}')
 
-          # اگر نتیجه داشت، مگنت بگیر
-          if results:
-              print(f'\n📥 استخراج لینک‌های مگنت...')
-              for i, r in enumerate(results):
-                  try:
-                      resp2 = requests.get(r['url'], headers=headers, timeout=10)
-                      if resp2.status_code == 200:
-                          soup2 = BeautifulSoup(resp2.text, 'html.parser')
-                          magnet_li = soup2.select_one('ul li a[href^="magnet:?xt="]')
-                          if magnet_li:
-                              results[i]['url'] = magnet_li.get('href', '')
-                              results[i]['ext'] = 'magnet'
-                          else:
-                              results[i]['url'] = 'No magnet found'
-                  except:
-                      pass
-                  print(f'   ✅ {i+1}/{len(results)}')
-          
-          # خروجی مشابه قبل
+          # ─── ذخیره نتایج ───
           if not results:
-              print('😞 هیچی پیدا نشد.')
-              exit(1)
-          
+              print('😞 هیچ نتیجه‌ای پیدا نشد.')
+              sys.exit(0)
+
           ts = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
           qs = re.sub(r'[^\w]', '_', query)[:30]
-          Path('searches').mkdir(exist_ok=True)
-          report = Path(f'searches/{qs}_{ts}.md')
-          
-          md = f'# 🧲 {query}\n\n**Results:** {len(results)}\n\n'
-          md += '| # | Title | Info | Magnet |\n'
-          md += '|---|-------|------|--------|\n'
+          search_dir = Path('searches')
+          search_dir.mkdir(exist_ok=True)
+          report_file = search_dir / f'{qs}_{ts}.md'
+
+          md = f'# {engine_name}\n\n'
+          md += f'**Query:** `{query}` | **Results:** {len(results)}\n\n'
+          md += '| # | Title | Info | Link |\n'
+          md += '|---|-------|------|------|\n'
           for i, r in enumerate(results, 1):
               title = r['title'].replace('|', '/')
               info = r.get('info', '').replace('|', '/')
-              md += f'| {i} | {title} | {info} | [MAGNET]({r["url"]}) |\n'
-          
-          md += '\n---\n\n## 📝 جزئیات\n\n'
+              md += f'| {i} | {title} | {info} | [Link]({r["url"]}) |\n'
+
+          md += '\n---\n\n## 📝 جزئیات کامل\n\n'
           for i, r in enumerate(results, 1):
               md += f'### {i}. {r["title"]}\n\n'
-              md += f'```text\n{r["url"]}\n```\n\n'
-              md += f'{r.get("info")}\n\n---\n\n'
-          
-          report.write_text(md)
-          print(f'✅ گزارش: {report}')
+              md += f'**URL:** {r["url"]}\n\n'
+              if r.get('direct'):
+                  md += f'**⚠️ لینک مستقیم فایل:** بله (.{r.get("ext")})\n\n'
+              md += f'**اطلاعات:** {r.get("info")}\n\n---\n\n'
+
+          report_file.write_text(md)
+          print(f'✅ گزارش نهایی: {report_file}')
           PYEOF
 
-      - name: 📤 آپلود به گیت‌هاب
+      - name: 📤 بارگذاری نتایج روی گیت‌هاب
         run: |
-          git config user.name "bot"
+          git config user.name "github-actions[bot]"
           git config user.email "bot@github.com"
+          
+          echo "📦 آماده‌سازی برای آپلود..."
           mkdir -p searches
           git add searches/
-          git diff --cached --quiet && exit 0
-          git commit -m "🧲 نتایج جستجوی ${{ github.event.inputs.query }}" --quiet
-          for i in 1 2 3; do
-            git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null && exit 0
-            sleep 3
+          
+          TOTAL=$(git diff --cached --name-only | wc -l)
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "😴 چیز جدیدی برای آپلود نیست."
+            exit 0
+          fi
+          
+          echo "   📊 فایل‌های تغییر کرده: $TOTAL"
+          git diff --cached --name-only | while read f; do echo "      📎 $f"; done
+          
+          QUERY="${{ github.event.inputs.query }}"
+          MODE="${{ github.event.inputs.mode }}"
+          git commit -m "🔍 جستجو [${MODE}]: ${QUERY:0:50} [skip ci]" --quiet
+          
+          for i in 1 2 3 4 5; do
+            echo -n "   🚀 تلاش $i..."
+            if git pull --rebase --quiet 2>/dev/null && git push --quiet 2>/dev/null; then
+              echo " ✅ پایان ماموریت!"
+              exit 0
+            fi
+            echo " ❌"
+            git rebase --abort 2>/dev/null || true
+            [ $i -lt 5 ] && sleep $((i*5))
           done
-          echo "❌ آپلود ناموفق"
+          echo "💀 آپلود ناموفق - احتمالاً حجم بالا یا قطعی نت"
           exit 1
